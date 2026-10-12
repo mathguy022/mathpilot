@@ -1,5 +1,5 @@
-# mathpilot
-AI Teaching Assistant and Learning Intelligence Platform for Mathematics Departments
+# MathPilot
+
 ### AI Teaching Assistant and Learning Intelligence Platform for Mathematics Departments
 
 MathPilot is an early-stage educational technology project exploring how AI can help students **learn to reason through mathematics**, help instructors spend less time repeating routine explanations, and provide useful evidence about where students are struggling.
