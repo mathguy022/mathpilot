@@ -1,0 +1,39 @@
+{% extends "base.html" %}{% set active_nav='practice' %}
+{% block title %}{{ activity.title }} — Solve{% endblock %}
+{% block content %}
+<h1>{{ activity.title }}</h1>
+<p class="muted" id="stepTracker">Step 1 of {{ steps|length }}: {{ steps[0].prompt if steps else '' }}</p>
+{% if total_questions > 1 %}<p class="muted">Question {{ question_index+1 }} of {{ total_questions }} in this class link.</p>{% endif %}
+<div class="card"><h3>Problem</h3>
+<div class="problem">{{ activity.problem_statement }}</div>
+<label for="step">Working step</label>
+<select id="step">
+{% for s in steps %}<option value="{{ loop.index0 }}" {% if loop.index0==active_step %}selected{% endif %}>Step {{ loop.index }}: {{ s.prompt }}</option>{% endfor %}
+</select></div>
+<div class="card" style="margin-top:16px"><h3>Your turn</h3>
+<label id="sin-label" for="student-input">Math input — visual editor, output sent as LaTeX</label>
+<math-field id="student-input" aria-labelledby="sin-label" role="textbox" aria-multiline="false"></math-field>
+<div class="row" style="margin-top:10px"><button class="btn" id="solveBtn" onclick="verifyStep()">Submit</button></div>
+<div id="solve-status"></div></div>
+<script>
+const STEPS={{ steps|tojson }}; const ACT={{ activity.id }};
+function stepIdx(){ return parseInt(document.getElementById('step').value||'0'); }
+function updateTracker(){ const i=stepIdx();
+ document.getElementById('stepTracker').textContent='Step '+(i+1)+' of '+STEPS.length+': '+(STEPS[i]?STEPS[i].prompt:'Done'); }
+document.getElementById('step').addEventListener('change', updateTracker);
+async function verifyStep(){ const btn=document.getElementById('solveBtn'); btn.disabled=true;
+ const latex=document.getElementById('student-input').getValue('latex');
+ if(!latex.trim()){ document.getElementById('solve-status').innerHTML='<div class="alert">Empty — type your step first.</div>'; btn.disabled=false; return; }
+ document.getElementById('solve-status').innerHTML='<p class="muted">Checking with SymPy + tutor…</p>';
+ try{ const r=await fetch('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({activity_id:ACT,step_index:stepIdx(),response:latex,hint_level:0})});
+  const j=await r.json(); if(!r.ok) throw new Error(j.detail||'request failed');
+  document.getElementById('solve-status').innerHTML = j.verdict==='correct'
+   ? '<div class="ok">✔ Verified step.'+(j.revealed?' (solution revealed per policy.)':'')+' '+(j.reply||'')+'</div>'
+   : '<div class="alert">Verdict: <b>'+j.verdict+'</b> — '+(j.detail||'')+'<br>'+(j.reply||'')+'</div>';
+  if(window.renderMath) window.renderMath(document.getElementById('solve-status'));
+ }catch(e){ document.getElementById('solve-status').innerHTML='<div class="alert">Request failed: '+e.message+'. Your input is preserved — try again.</div>'; }
+ btn.disabled=false;
+}
+</script>
+{% endblock %}

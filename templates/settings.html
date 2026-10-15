@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% set nav='settings' %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<div class="card"><h3>AI Provider (server-side only — keys never reach the browser)</h3>
+<p>Math model: <code>{{ math_model }}</code></p>
+<p>Socratic model: <code>{{ socratic_model }}</code></p>
+{% if demo %}<div class="alert"><b>Demo mode is ON.</b> Set <code>NEBIUS_API_KEY</code> in <code>.env</code>, set <code>DEMO_MODE=false</code>, and restart for live tutoring.</div>
+{% else %}<div class="ok"><b>Live AI configured.</b> Tutor calls run server-side via Nebius.</div>{% endif %}
+<p class="muted">To go live: copy <code>.env.example</code> → <code>.env</code>, paste your Nebius key, restart with <code>py -m uvicorn app.main:app --reload</code>.</p></div>
+{% endblock %}

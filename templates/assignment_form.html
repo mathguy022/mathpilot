@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% set active_nav='practice' %}
+{% block title %}{{ 'Edit' if activity else 'New' }} Assignment{% endblock %}
+{% block content %}
+<h1>{{ 'Edit' if activity else 'New' }} Assignment</h1>
+<p class="muted">Every field below is functional — saving updates the student experience immediately.</p>
+<form method="post" action="/assignments/save" class="card">
+<input type="hidden" name="id" value="{{ activity.id if activity else 0 }}">
+<label>Activity title *</label><input name="title" required value="{{ activity.title if activity else '' }}">
+<label>Course / topic</label><input name="course_topic" value="{{ activity.course_topic if activity else 'Calculus' }}">
+<label>Problem statement *</label><textarea name="problem_statement" rows="3" required>{{ activity.problem_statement if activity else '' }}</textarea>
+<label>Learning objectives</label><textarea name="learning_objectives" rows="2">{{ activity.learning_objectives if activity else '' }}</textarea>
+<label>Expected steps (JSON list of {prompt, expected, hint[]}) *</label><textarea name="expected_steps" rows="8" required>{{ activity.expected_steps_json if activity else '[{"prompt": "Write the volume of a cone of radius r and height h.", "expected": "(1/3)*pi*r^2*h", "hint": ["Recall the cone volume formula."]}]' }}</textarea>
+<label>Accepted methods</label><input name="accepted_methods" value="{{ activity.accepted_methods if activity else '' }}">
+<label>Common misconceptions</label><input name="misconceptions" value="{{ activity.misconceptions if activity else '' }}">
+<label>Max failed attempts before a worked explanation</label><input type="number" name="max_attempts_before_reveal" min="1" max="10" value="{{ activity.max_attempts_before_reveal if activity else 3 }}">
+<label><input type="checkbox" name="allow_solution_reveal" value="true" style="width:auto" {{ 'checked' if (activity and activity.allow_solution_reveal) or not activity else '' }}> Allow solution reveal after max attempts</label>
+<div class="row" style="margin-top:12px"><button class="btn" type="submit">Save Activity</button><a class="btn ghost" href="/assignments">Cancel</a></div>
+</form>
+{% endblock %}

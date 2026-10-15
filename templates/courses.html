@@ -1,0 +1,7 @@
+{% extends "base.html" %}{% set nav='courses' %}
+{% block title %}Courses{% endblock %}
+{% block content %}
+<h1>My Courses</h1>
+<div class="grid g3">{% for c in courses %}<div class="card"><h3>📘 {{ c.title }}</h3><p class="muted">{{ c.topic }}</p>
+{% for a in activities %}<p><a href="/activity/{{ a.id }}">{{ a.title }}</a></p>{% endfor %}</div>{% endfor %}</div>
+{% endblock %}

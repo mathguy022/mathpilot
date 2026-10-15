@@ -1,0 +1,38 @@
+{% extends "base.html" %}{% set nav='home' %}
+{% block title %}Home{% endblock %}
+{% block content %}
+<h1>Good morning, Alex! 👋</h1>
+<p class="muted">Let's solve some math together. Socratic guidance — hints, not answers.</p>
+<div class="grid g2">
+  <div class="card">
+    <h3>🎯 Today's Problem</h3>
+    {% if activities %}
+    {% set a = activities[0] %}
+    <p><b>{{ a.title }}</b></p>
+    <div class="problem">{{ a.problem_statement }}</div>
+    <div class="row" style="margin-top:12px">
+      <a class="btn" href="/activity/{{ a.id }}">Start solving</a>
+      <a class="btn ghost" href="/assignments">All practice</a>
+    </div>
+    {% else %}
+    <p class="muted">No activities yet. <a href="/assignments/new">Create one</a>.</p>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h3>🤖 MathPilot Tutor</h3>
+    <p class="muted">Here to help, not give you the answer.</p>
+    <div class="msg"><div class="who">MathPilot</div>Great start! What do you think is the first step to solve this equation?</div>
+    <div class="row"><a class="btn small ghost" href="/activity/{{ activities[0].id if activities else 1 }}">💡 Get a Hint</a><a class="btn small ghost" href="/progress">📊 Check Answer</a></div>
+  </div>
+</div>
+<div class="grid g4" style="margin-top:16px">
+  <div class="card"><div class="feature"><span class="ic">💡</span><span><b>Step-by-Step Hints</b><br><small class="muted">Get guided help, not the answer.</small></span></div></div>
+  <div class="card"><div class="feature"><span class="ic">🎯</span><span><b>Instant Feedback</b><br><small class="muted">Know what to improve.</small></span></div></div>
+  <div class="card"><div class="feature"><span class="ic">📊</span><span><b>Track Progress</b><br><small class="muted">See your growth over time.</small></span></div></div>
+  <div class="card"><div class="feature"><span class="ic">⭐</span><span><b>Build Confidence</b><br><small class="muted">One problem at a time.</small></span></div></div>
+</div>
+<div class="grid g2" style="margin-top:16px">
+  <div class="card"><h3>📚 Courses</h3>{% for c in courses %}<p>📘 {{ c.title }} <small class="muted">· {{ c.topic }}</small></p>{% endfor %}</div>
+  <div class="card"><h3>🧑‍🎓 Classmates (synthetic)</h3>{% for s in students %}<p>👤 {{ s.name }}</p>{% endfor %}</div>
+</div>
+{% endblock %}

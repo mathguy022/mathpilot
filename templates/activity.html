@@ -1,0 +1,95 @@
+{% extends "base.html" %}{% set active_nav='practice' %}
+{% block title %}{{ activity.title }}{% endblock %}
+{% block content %}
+<h1>{{ activity.title }}</h1>
+<p class="muted">{{ activity.course_topic }} · Step-by-step Socratic tutoring · SymPy-checked</p>
+{% if demo %}<div class="alert"><b>Demo mode:</b> feedback is rule-based and labeled. Add <code>NEBIUS_API_KEY</code> + restart for live Qwen → Nemotron tutoring.</div>{% endif %}
+<div class="grid g2">
+  <div class="card">
+    <h3>🎯 Current Problem</h3>
+    <div class="problem">{{ activity.problem_statement }}</div>
+    <label for="step">Working step</label>
+    <select id="step">
+      {% for s in steps %}<option value="{{ loop.index0 }}">Step {{ loop.index }}: {{ s.prompt }}</option>{% endfor %}
+    </select>
+    <p id="stepPrompt" class="muted"></p>
+    <label id="mf-label" for="mf">Math input — type or use the visual editor (toolbar: fractions, π, √, powers)</label>
+    <div class="row" style="margin-bottom:6px">
+      <button type="button" class="btn small ghost" id="modeBtn" onclick="toggleMode()">⌨️ Plain-text mode</button>
+      <span class="muted"><small id="modeHint">Visual math editor active — output sent as LaTeX.</small></span>
+    </div>
+    <math-field id="mf" aria-labelledby="mf-label" role="textbox" aria-multiline="false">\frac{1}{3}\pi r^2 h</math-field>
+    <textarea id="answer" rows="3" style="display:none" placeholder="e.g. (2/3)*pi*r^3  — supports +, -, *, /, ^, pi, dr/dt, LaTeX \frac{}{}, Unicode π ² ⅓"></textarea>
+    <p class="muted"><small>Accepted formats: plain ASCII (<code>(1/3)*pi*r^2*h</code>), LaTeX (<code>\frac{1}{3}\pi r^2 h</code>), or Unicode (<code>⅓πr²h</code>) — all verified equivalent by SymPy.</small></p>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="submitBtn" onclick="submitStep()">Submit</button>
+      <button class="btn ghost" onclick="getHint()">💡 Get a Hint</button>
+      <button class="btn ghost" onclick="checkWork()">✔ Check My Work</button>
+      <button class="btn ghost" onclick="showSteps()">📖 Show Steps</button>
+    </div>
+    <div id="status"></div>
+    <p class="muted"><small>Accepted methods: {{ activity.accepted_methods }}<br>Common misconception to avoid: {{ activity.misconceptions }}</small></p>
+  </div>
+  <div class="card">
+    <h3>🤖 Tutor conversation</h3>
+    <div class="chat" id="chat"><div class="msg"><div class="who">MathPilot</div>I'll guide you — submit one step at a time and I'll give feedback, not the answer.</div></div>
+    <div id="hintBox"></div>
+    <div id="stepsBox" style="display:none" class="muted"><ol>{% for s in steps %}<li>{{ s.prompt }} <br><small>Expected form: <code>{{ s.expected }}</code></small></li>{% endfor %}</ol>
+    <p><small>Steps shown per activity policy (reveal {{ 'allowed' if activity.allow_solution_reveal else 'limited' }}).</small></p></div>
+  </div>
+</div>
+<div class="card" style="margin-top:16px"><h3>Recent attempts (this activity)</h3>
+<table><tr><th>When</th><th>Step</th><th>Response</th><th>Verdict</th></tr>
+{% for t in attempts %}<tr><td>{{ t.created_at }}</td><td>{{ t.step_index+1 }}</td><td><code>{{ t.student_response }}</code></td><td><span class="badge {{ t.verdict }}">{{ t.verdict }}</span></td></tr>{% else %}<tr><td colspan="4" class="muted">No attempts yet — submit your first step above.</td></tr>{% endfor %}</table></div>
+<script>
+const STEPS = {{ steps|tojson }};
+const ACT = {{ activity.id }};
+let hintLevel = 0;
+function stepIdx(){ return parseInt(document.getElementById('step').value||'0'); }
+document.getElementById('step').addEventListener('change', e=>{ document.getElementById('stepPrompt').textContent = STEPS[stepIdx()].prompt; });
+document.getElementById('stepPrompt').textContent = STEPS.length ? STEPS[0].prompt : '';
+function bubble(who, html, me){ const c=document.getElementById('chat'); const d=document.createElement('div'); d.className='msg'+(me?' me':''); d.innerHTML='<div class="who">'+who+'</div>'+html; c.appendChild(d); c.scrollTop=c.scrollHeight; if(window.renderMath) window.renderMath(d); }
+let visualMode = true;
+function currentAnswer(){
+  if(visualMode){
+    const mf = document.getElementById('mf');
+    try { return mf.getValue('latex') || mf.value || ''; } catch(e){ return mf.value || ''; }
+  }
+  return document.getElementById('answer').value;
+}
+function toggleMode(){
+  visualMode = !visualMode;
+  document.getElementById('mf').style.display = visualMode ? 'block' : 'none';
+  document.getElementById('answer').style.display = visualMode ? 'none' : 'block';
+  document.getElementById('modeBtn').textContent = visualMode ? '⌨️ Plain-text mode' : '🧮 Visual editor mode';
+  document.getElementById('modeHint').textContent = visualMode ? 'Visual math editor active — output sent as LaTeX.' : 'Plain text active — ASCII, LaTeX, or Unicode all accepted.';
+}
+async function submitStep(){ const btn=document.getElementById('submitBtn'); btn.disabled=true;
+  const resp=currentAnswer();
+  const warn=precheck(resp);
+  if(warn){ document.getElementById('status').innerHTML='<div class="alert">'+warn+'</div>'; btn.disabled=false; return; }
+  bubble('You', resp.replace(/</g,'&lt;'), true);
+  document.getElementById('status').innerHTML='<p class="muted">Checking with SymPy + tutor…</p>';
+  try{ const r=await fetch('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({activity_id:ACT,step_index:stepIdx(),response:resp,hint_level:hintLevel})});
+    const j=await r.json();
+    if(!r.ok) throw new Error(j.detail||'request failed');
+    bubble('MathPilot ('+j.verdict+')', j.reply.replace(/</g,'&lt;'));
+    document.getElementById('status').innerHTML = j.verdict==='correct' ? '<div class="ok">✔ Verified step. Move to the next step above.</div>' : '<div class="alert">Verdict: <b>'+j.verdict+'</b> — '+(j.detail||'')+'</div>';
+  }catch(e){ document.getElementById('status').innerHTML='<div class="alert">Request failed: '+e.message+'. Your input is preserved — try again.</div>'; }
+  btn.disabled=false;
+}
+async function getHint(){ hintLevel=Math.min(4,hintLevel+1);
+  const r=await fetch('/api/hint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({activity_id:ACT,step_index:stepIdx(),level:hintLevel})});
+  const j=await r.json(); document.getElementById('hintBox').innerHTML='<div class="ok">💡 Hint level '+j.level+': '+String(j.hint).replace(/</g,'&lt;')+'</div>';
+  if(window.renderMath) window.renderMath(document.getElementById('hintBox'));
+  bubble('MathPilot','Hint level '+j.level+': '+String(j.hint).replace(/</g,'&lt;'));
+}
+async function checkWork(){ await submitStep(); }
+function showSteps(){ const b=document.getElementById('stepsBox'); b.style.display = b.style.display==='none'?'block':'none'; }
+function precheck(resp){
+  if(!resp.trim()) return "Empty — type your step first.";
+  if(/\\text\{[^}]*[a-z]{4,}/i.test(resp)) return "Looks like English prose inside \\text{} — submit math only.";
+  return null;
+}
+</script>
+{% endblock %}

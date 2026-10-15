@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% set nav='progress' %}
+{% block title %}Progress{% endblock %}
+{% block content %}
+<h1>Track Your Progress</h1>
+<p class="muted">See your growth. Set goals. Achieve more.</p>
+<div class="grid g2">
+<div class="card"><h3>Overall Mastery</h3>{% for m in mastery %}<p>{{ m.topic }} — {{ m.score|round(0) }}%<div class="bar"><i style="width:{{ m.score }}%"></i></div></p>{% else %}<p class="muted">No mastery records yet.</p>{% endfor %}</div>
+<div class="card"><h3>Recent Achievements</h3><p>🏅 Completed practice steps <b class="muted">+50 XP</b></p><p>📈 Submitted {{ attempts|length }} steps total</p></div>
+</div>
+<div class="card" style="margin-top:16px"><h3>My Attempts</h3>
+<table><tr><th>When</th><th>Activity</th><th>Step</th><th>Response</th><th>Verdict</th></tr>
+{% for t in attempts %}<tr><td>{{ t.created_at }}</td><td>{{ t.activity_id }}</td><td>{{ t.step_index+1 }}</td><td><code>{{ t.student_response }}</code></td><td><span class="badge {{ t.verdict }}">{{ t.verdict }}</span></td></tr>{% else %}<tr><td colspan="5" class="muted">No attempts yet.</td></tr>{% endfor %}</table></div>
+{% endblock %}

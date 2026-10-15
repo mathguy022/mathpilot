@@ -1,0 +1,125 @@
+{% extends "base.html" %}{% set nav='instructor' %}
+{% block title %}Instructor Dashboard{% endblock %}
+{% block content %}
+<h1>Instructor Dashboard</h1>
+<p class="muted">Controls on the left, lesson canvas on the right. Demo only: links are in-memory and clear on restart.</p>
+<div class="split">
+<aside class="admin-panel">
+  <section class="card"><h3>1 · Generation</h3>
+  <label for="les-notes">Lecture notes context</label>
+  <textarea id="les-notes" rows="5" placeholder="Paste lecture notes…"></textarea>
+  <label for="les-topic">Topic</label>
+  <select id="les-topic">
+  <option>Pre-Algebra</option><option>Algebra 1</option><option>Algebra 2</option>
+  <option>Geometry</option><option>Trigonometry</option><option selected>Calculus 1</option>
+  </select>
+  <label for="les-count">Number of questions</label>
+  <input id="les-count" type="number" min="1" max="10" value="5">
+  <div class="row" style="margin-top:10px"><button class="btn small" id="genBtn" onclick="genLesson()">✨ Generate &amp; Verify Lesson</button></div>
+  <div id="les-out" style="margin-top:8px"><p class="muted">No drafts yet.</p></div></section>
+  <section class="card"><h3>2 · Configuration</h3>
+  <label class="check"><input type="checkbox" id="cfg-worked" checked style="width:auto"> Include worked example (first question as demo)</label>
+  <label>Difficulty balance</label>
+  <div class="row" role="radiogroup" aria-label="Difficulty balance">
+  <label class="check"><input type="radio" name="cfg-diff" value="mixed" checked style="width:auto"> Mixed</label>
+  <label class="check"><input type="radio" name="cfg-diff" value="easy" style="width:auto"> Easy focus</label>
+  <label class="check"><input type="radio" name="cfg-diff" value="hard" style="width:auto"> Hard focus</label>
+  </div></section>
+  <section class="card"><h3>3 · Publishing</h3>
+  <label for="pub-title">Assignment title</label>
+  <input id="pub-title" placeholder="e.g. Week 3 — Systems practice">
+  <label for="pub-due">Due date</label>
+  <input id="pub-due" type="date">
+  <label for="pub-grade">Grading policy</label>
+  <select id="pub-grade"><option>Completion</option><option>Mastery</option></select>
+  <div class="row" style="margin-top:10px"><button class="btn small" id="assignBtn" onclick="assignLesson()" disabled>📢 Assign to Class</button></div>
+  <div id="assign-out"></div></section>
+</aside>
+<main class="canvas"><div class="card canvas-head"><h3>Lesson Canvas</h3>
+<p class="muted" id="canvas-meta">Nothing generated yet.</p></div>
+<div id="preview"><div class="card empty-state">
+<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.5;margin-bottom:12px"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+<p style="font-size:18px;font-weight:700">No lesson loaded</p>
+<p class="muted">Enter context on the left and click Generate.</p></div></div></main>
+</div>
+<script>
+let DRAFTS=[];
+function toast(msg){ const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
+ document.body.appendChild(t); setTimeout(()=>t.remove(),4000); }
+function esc(s){ return String(s).replace(/</g,'&lt;'); }
+// Wrap bare math-only fields in $...$ so KaTeX auto-render picks them up.
+// Fields already containing delimiters pass through untouched.
+function asMath(s){ s=String(s==null?"":s).trim(); if(!s) return "";
+ if(/\$|\\\(|\\\[/.test(s)) return s; return "$"+s+"$"; }
+window.asMath=asMath;
+function tagsOf(q){ const tags=new Set();
+ (q.steps||[]).forEach(s=>{(s.objective_tags||[]).forEach(t=>tags.add(t));});
+ return [...tags].slice(0,4).map(t=>'<span class="tag">'+esc(t)+'</span>').join(''); }
+function stepsHtml(q){ return '<details class="steps"><summary>Solution steps ('+q.steps.length+')</summary><ol>'
+ +(q.steps||[]).map(s=>'<li><span class="step-math">'
+  +esc(asMath(s.expected_input_latex||''))+'</span><br><small class="muted">'+esc(s.description||'')+'</small></li>').join('')
+ +'</ol></details>'; }
+function diffLevel(){ const el=document.querySelector('input[name="cfg-diff"]:checked'); return el?el.value:'mixed'; }
+function renderCanvas(){
+ const prev=document.getElementById('preview');
+ const meta=document.getElementById('canvas-meta');
+ const worked=document.getElementById('cfg-worked').checked;
+ if(!DRAFTS.length){ prev.innerHTML='<div class="card empty-state">'
+  +'<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.5;margin-bottom:12px"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>'
+  +'<p style="font-size:18px;font-weight:700">No lesson loaded</p>'
+  +'<p class="muted">Enter context on the left and click Generate.</p></div>';
+  meta.textContent='Nothing generated yet.'; return; }
+ meta.textContent=DRAFTS.length+' verified question(s) · '+diffLevel()+' difficulty';
+ const start=worked?1:0;
+ let html='';
+ if(worked&&DRAFTS.length){ const w=DRAFTS[0];
+  html+='<div class="card worked"><h3>Worked Example</h3>'
+  +'<math-field readonly class="readonly-math-display">'+esc(w.prompt_latex)+'</math-field>'
+  +stepsHtml(w)+'</div>'; }
+ html+=DRAFTS.slice(start).map((q,k)=>{const i=worked?k+1:k;
+  return '<div class="card qcard" data-i="'+i+'"><p><b>Q'+(k+1)+'</b> '+tagsOf(q)
+  +'<span class="badge correct">✓ SymPy Verified</span>'
+  +'<span class="qactions"><button class="btn small ghost" onclick="moveDraft('+i+',-1)" aria-label="Move up">↑</button>'
+  +'<button class="btn small ghost" onclick="moveDraft('+i+',1)" aria-label="Move down">↓</button>'
+  +'<button class="btn small ghost" onclick="delDraft('+i+')" aria-label="Delete">✕</button></span><br>'
+  +'<math-field readonly class="readonly-math-display">'+esc(q.prompt_latex)+'</math-field>'
+  +'<br><small class="muted">Answer: '+esc(asMath(q.final_answer_latex))+'</small></p>'
+  +stepsHtml(q)+'</div>';}).join('');
+ prev.innerHTML=html||'<div class="card empty-state"><p class="muted">All drafts removed — generate again or assign nothing.</p></div>';
+ if(window.renderMath) window.renderMath(prev);
+ prev.querySelectorAll('details.steps').forEach(d=>d.addEventListener('toggle',()=>{ if(window.renderMath) window.renderMath(d); }));
+ document.getElementById('assignBtn').disabled=!DRAFTS.length;
+}
+function moveDraft(i,d){ const j=i+d; if(j<0||j>=DRAFTS.length) return;
+ const t=DRAFTS[i]; DRAFTS[i]=DRAFTS[j]; DRAFTS[j]=t; renderCanvas(); }
+function delDraft(i){ DRAFTS.splice(i,1); renderCanvas();
+ document.getElementById('assignBtn').disabled=!DRAFTS.length; }
+async function genLesson(){ const out=document.getElementById('les-out');
+ const btn=document.getElementById('genBtn'); btn.disabled=true; DRAFTS=[]; renderCanvas();
+ const n=Math.max(1,Math.min(10,parseInt(document.getElementById('les-count').value||'5')));
+ const bal=diffLevel(); const diffTarget=bal==='easy'?2:(bal==='hard'?4:3);
+ out.innerHTML='<p class="muted"><span class="spinner"></span>Generating… Verifying with SymPy…</p>';
+ try{ const r=await fetch('/api/generate-questions',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({topic:document.getElementById('les-topic').value,notes:document.getElementById('les-notes').value,num_questions:n,difficulty:diffTarget})});
+  const j=await r.json();
+  if(!r.ok){ out.innerHTML='<p class="muted">No drafts yet.</p>'; toast('Error: '+(j.detail||'failed')); btn.disabled=false; return; }
+  if(!j.verified.length){ out.innerHTML='<p class="muted">No drafts yet.</p>';
+   document.getElementById('preview').innerHTML='<p class="muted">No verified drafts. Discarded '+j.discarded+'. '+esc((j.discard_reasons||[]).join(' '))+'</p>';
+   btn.disabled=false; return; }
+  DRAFTS=j.verified; renderCanvas();
+  out.innerHTML='<p><small class="muted">'+j.verified.length+' verified, '+j.discarded+' discarded ('+bal+').</small></p>';
+  document.getElementById('assignBtn').disabled=false;
+ }catch(e){ toast('Request failed.'); }
+ btn.disabled=false; }
+async function assignLesson(){ const box=document.getElementById('assign-out');
+ box.innerHTML='<p class="muted">Assigning…</p>';
+ try{ const r=await fetch('/api/lessons/assign',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({topic:document.getElementById('les-topic').value,questions:DRAFTS,
+   title:document.getElementById('pub-title').value, due:document.getElementById('pub-due').value,
+   grading:document.getElementById('pub-grade').value, difficulty_balance:diffLevel(),
+   worked_example:document.getElementById('cfg-worked').checked})});
+  const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); box.innerHTML=''; return; }
+  window.location.href='/success/'+j.link_id;
+ }catch(e){ toast('Request failed.'); box.innerHTML=''; } }
+</script>
+{% endblock %}

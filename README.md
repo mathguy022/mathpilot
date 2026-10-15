@@ -108,7 +108,54 @@ The design principle is to use AI where language understanding and tutoring are 
 
 ## Development Status
 
-**Status: Product definition and architecture planning. No application features are claimed to be implemented yet.**
+**Status: Working FastAPI MVP implemented (demo mode default).**
+
+What is live now (verified with 15 passing tests + HTTP smoke tests):
+
+- **Student workspace** (`/`, `/activity/{id}`): problem display, step selector,
+  math input, Submit / Get a Hint / Check My Work / Show Steps — all functional.
+- **Socratic tutor** (`app/tutor.py`): step orchestration, 4 hint levels, reveal
+  policy enforced in code. Demo replies are rule-based and labeled until a key is set.
+- **Math verification** (`app/verifier.py`): SymPy algebraic-equivalence checks,
+  numeric fallback, safe parsing (bounded length, allowlist, no code execution).
+- **Two-stage Nebius pipeline** (`app/nebius.py`): Qwen judges the step, Nemotron
+  crafts the Socratic reply from that verdict. Server-side only, OpenAI-compatible
+  `/chat/completions` endpoint. Model IDs configurable via env.
+- **Instructor dashboard** (`/instructor`): attempt/hint counts, correct rate,
+  observed per-step error rates from `/api/analytics` — computed from stored
+  records, never invented.
+- **Assignments** (`/assignments`, `/assignments/new`, `/edit`): full CRUD editor;
+  saving immediately changes the student experience.
+- **Materials** (`/materials`), **Progress** (`/progress`), **Courses** (`/courses`),
+  **Settings** (`/settings`): all functional; settings shows live/demo AI state.
+
+### Run it
+
+```bash
+py -m pip install -r requirements.txt
+py -m pytest tests/ -q
+DEMO_MODE=true py -m uvicorn app.main:app --reload   # demo mode, no key needed
+```
+
+### Go live with Nebius
+
+```bash
+cp .env.example .env   # then edit: NEBIUS_API_KEY, DEMO_MODE=false
+py -m uvicorn app.main:app --reload
+```
+
+Env vars: `NEBIUS_API_KEY`, `NEBIUS_MATH_MODEL` (default
+`Qwen/Qwen3.5-122B-A10B-FP8`), `NEBIUS_SOCRATIC_MODEL` (default
+`nvidia/nemotron-3-nano-30b-a3b`), `NEBIUS_BASE_URL`,
+`DATABASE_URL` (default SQLite `./mathpilot.db`), `DEMO_MODE`.
+
+### Known limitations / next phases
+
+- Demo role is fixed (Alex Johnson, student); no real auth — labeled demo only.
+- SQLite default; PostgreSQL is a future swap via `DATABASE_URL`.
+- File upload / document extraction for materials is a curated note workflow for now.
+- Verify the exact Nebius model IDs against the Token Factory catalog before the
+  hackathon demo; they are env-configurable without code changes.
 
 The project is currently defining its requirements, tutoring policies, technical architecture, and initial prototype scope. The repository is being organized before application code is introduced.
 

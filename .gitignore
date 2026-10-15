@@ -152,6 +152,8 @@ activemq-data/
 # Environments
 .env
 .envrc
+.mathpilot.db
+mathpilot.db
 .venv
 env/
 venv/

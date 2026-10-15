@@ -1,0 +1,14 @@
+{% extends "base.html" %}{% set nav='materials' %}
+{% block title %}Course Materials{% endblock %}
+{% block content %}
+<h1>Course Materials & Verified Sources</h1>
+<p class="muted">Curated references the tutor may cite. No fabricated citations — only what is listed here.</p>
+<div class="grid g2">
+<div class="card"><h3>Add material</h3><form method="post" action="/materials/add">
+<label>Title *</label><input name="title" required>
+<label>Kind</label><select name="kind"><option value="note">note</option><option value="reference">reference</option><option value="link">link</option></select>
+<label>Body</label><textarea name="body" rows="4"></textarea>
+<button class="btn" type="submit" style="margin-top:10px">Add</button></form></div>
+<div class="card"><h3>Library</h3>{% for m in items %}<p><b>{{ m.title }}</b> <small class="muted">[{{ m.kind }}]</small><br>{{ m.body }}</p>{% else %}<p class="muted">Empty — add the first reference.</p>{% endfor %}</div>
+</div>
+{% endblock %}

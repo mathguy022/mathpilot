@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% set active_nav='practice' %}
+{% block title %}Practice{% endblock %}
+{% block content %}
+<h1>Practice & Assignments</h1>
+<div class="row"><a class="btn" href="/assignments/new">＋ New Assignment</a></div>
+<div class="grid g3" style="margin-top:14px">
+{% for a in activities %}<div class="card"><h3>{{ a.title }}</h3><p class="muted">{{ a.course_topic }}</p><p>{{ a.problem_statement[:160] }}…</p>
+<div class="row"><a class="btn small" href="/activity/{{ a.id }}">Solve</a><a class="btn small ghost" href="/assignments/{{ a.id }}/edit">Edit</a></div></div>{% endfor %}
+</div>
+{% endblock %}

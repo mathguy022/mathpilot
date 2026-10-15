@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}MathPilot{% endblock %} · Think Deeper. Solve Better.</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mathlive@4.15.0/dist/mathlive.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script defer src="/static/js/math-render.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathlive@4.15.0/dist/mathlive.min.js"></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">🚀</span><span><b>MathPilot</b><small>Think Deeper. Solve Better.</small></span></div>
+    <nav class="nav">
+      <a href="/" class="{% if nav=='home' %}active{% endif %}">🏠 Home</a>
+      <a href="/courses" class="{% if nav=='courses' %}active{% endif %}">📚 My Courses</a>
+      <a href="/assignments" class="{% if nav=='practice' %}active{% endif %}">📝 Practice</a>
+      <a href="/progress" class="{% if nav=='progress' %}active{% endif %}">📈 Progress</a>
+      <a href="/materials" class="{% if nav=='materials' %}active{% endif %}">📖 Course Materials</a>
+      <a href="/instructor" class="{% if nav=='instructor' %}active{% endif %}">👩‍🏫 Instructor</a>
+      <a href="/settings" class="{% if nav=='settings' %}active{% endif %}">⚙️ Settings</a>
+    </nav>
+    <div class="side-user"><span style="font-size:26px">🧑‍🎓</span><span><b>Alex Johnson</b><br><small style="color:#bcd0f5">Student</small></span></div>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <div class="role-switch">
+        <a href="/" class="{% if nav!='instructor' %}on{% endif %}">Student view</a>
+        <a href="/instructor" class="{% if nav=='instructor' %}on{% endif %}">Instructor view</a>
+      </div>
+      {% if demo is defined and demo %}
+      <span class="pill">⚠️ Demo mode — add <code>NEBIUS_API_KEY</code> for live AI tutoring</span>
+      {% endif %}
+    </div>
+    {% block content %}{% endblock %}
+    <footer>MathPilot MVP · Socratic tutoring + SymPy verification · Synthetic demo data only.</footer>
+  </main>
+</div>
+</body>
+</html>
