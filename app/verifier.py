@@ -18,7 +18,7 @@ from sympy.parsing.sympy_parser import (
 MAX_LEN = 2000  # LaTeX is verbose; length still bounded
 TRANSFORMATIONS = standard_transformations + (implicit_multiplication_application,)
 
-_ALLOWED_RE = re.compile(r"^[0-9a-zA-Z\s\+\-\*\/\^\(\)\.,=d_\{\}]+$")
+_ALLOWED_RE = re.compile(r"^[0-9a-zA-Z\s\+\-\*\/\^\(\)\.,=d_\{\}:]+$")
 
 # Unicode math symbols students may type or paste -> ASCII equivalents.
 _UNICODE_MAP = {
@@ -227,9 +227,13 @@ PROBE_POINTS = (1, 2, -1)
 
 # Constrained grammar for limit specs the generator may emit:
 #   \lim_{x \to 2} <expr>   or   lim_{x->2} <expr>   or   limit x->2: <expr>
+# The point may be a number, \infty / -\infty, or an expression.
+# Braces are balanced-aware: the point group cannot contain an
+# unbalanced '}' and the expression runs to end of string.
 _LIMIT_RE = re.compile(
     r"(?:\\lim|\\operatorname\{lim\}|lim(?:it)?)\s*[_]?\{?\s*"
-    r"([a-zA-Z])\s*(?:\\to|->)\s*([^{}]+?)\s*\}?\s*[:;,]?\s*(.+)$",
+    r"([a-zA-Z])\s*(?:\\to|->)\s*"
+    r"(\\infty\s*|-\s*\\infty\s*|[^\\{}]+?)\s*\}\s*[:;,]?\s*(.+)$",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -492,11 +496,19 @@ def _verify_calculus(question, mode: str) -> Verdict:
                     "Limit spec not in supported form "
                     "(e.g. \\lim_{x \\to 2} x^2).")
             var = sp.Symbol(m.group(1))
-            try:
-                point = _parse_single(m.group(2))
-            except Exception:
-                return Verdict("unverifiable",
-                               f"Could not parse limit point: {m.group(2)!r}")
+            point_raw = m.group(2).strip()
+            # \infty / -\infty (single or JSON-double-escaped backslashes).
+            if re.fullmatch(r"\\{1,2}infty", point_raw):
+                point = sp.oo
+            elif re.fullmatch(r"-\s*\\{1,2}infty", point_raw):
+                point = -sp.oo
+            else:
+                try:
+                    point = _parse_single(point_raw)
+                except Exception:
+                    return Verdict(
+                        "unverifiable",
+                        f"Could not parse limit point: {m.group(2)!r}")
             expr = _parse_single(m.group(3))
             expected = sp.limit(expr, var, point)
             answer = _parse_single(question.final_answer_latex)
@@ -574,6 +586,19 @@ def verify_canonical(question) -> Verdict:
         return _verify_calculus(question, mode)
     if mode == "simplify":
         return _verify_simplify(question)
+    # Default for unknown/untagged topics: try the equation solver first
+    # (handles bare 'x+1=2' prompts with no tags), then fall back to the
+    # simplify check (trig identities, logs, expressions). Never crashes.
+    try:
+        eq_verdict = _verify_equation(question, is_system=False)
+        if eq_verdict.status in ("correct", "incorrect"):
+            return eq_verdict
+    except Exception:
+        pass
+    try:
+        return _verify_simplify(question)
+    except Exception:
+        pass
     # Default: algebraic equivalence of final answer vs last step.
     if question.final_answer_latex and question.steps:
         return check_equivalent(question.final_answer_latex,

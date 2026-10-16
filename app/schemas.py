@@ -46,6 +46,106 @@ class LessonPlan(BaseModel):
     questions: list[Question] = []
 
 
+# --- Plan C: structured lesson + assignment contracts ---
+
+SECTION_KINDS = (
+    "objectives", "prerequisites", "introduction", "definitions",
+    "explanation", "worked_example", "visualization", "misconceptions",
+    "practice", "solutions", "summary", "comprehension_check",
+)
+
+
+class LessonExample(BaseModel):
+    """One worked example: problem + ordered steps with why-valid notes."""
+
+    problem_latex: str = ""
+    steps: list[dict[str, str]] = []  # {expression, why}
+    final_answer_latex: str = ""
+    verification: str = "needs-review"  # verified|needs-review|unable-to-verify
+
+
+class LessonSection(BaseModel):
+    kind: str = "explanation"
+    heading: str = ""
+    body_markdown: str = ""
+    math_latex: list[str] = []
+    examples: list[LessonExample] = []
+
+
+class LessonContent(BaseModel):
+    """Full instructor lesson: structured, renderable, editable sections."""
+
+    title: str = ""
+    course: str = ""
+    topic: str = ""
+    objectives: list[str] = []
+    prerequisites: list[str] = []
+    sections: list[LessonSection] = []
+    source_notes: str = ""  # derived-from-source vs ai-supplemental marker
+    verification_summary: dict[str, int] = {}
+
+
+class LessonSettings(BaseModel):
+    hints_enabled: bool = True
+    reveal_policy: str = "after-attempts"  # immediate|after-attempts|never
+    allow_retry: bool = True
+    require_comprehension: bool = False
+    record_completion: bool = True
+    max_attempts_before_reveal: int = 3
+
+
+class AssignmentItem(BaseModel):
+    item_id: str = ""
+    prompt_latex: str = ""
+    steps: list[QuestionStep] = []
+    hints: list[str] = []
+    objective_tags: list[str] = []
+    difficulty: int = Field(default=3, ge=1, le=5)
+    verification: str = "needs-review"  # verified|needs-review|unable-to-verify
+
+
+class AssignmentSolution(BaseModel):
+    final_answer_latex: str = ""
+    solution_steps: list[str] = []
+    explanation: str = ""
+
+
+class AssignmentSettings(BaseModel):
+    title: str = ""
+    due_date: str = ""
+    attempts_allowed: int = 1
+    grading_policy: str = "Completion"
+    hints_enabled: bool = True
+    solution_release: str = "after-due"  # after-due|after-attempts|never
+
+
+def lesson_content_from_json(raw: str) -> LessonContent:
+    """Parse stored JSON into LessonContent; corrupt data -> empty lesson."""
+    import json
+
+    try:
+        data = json.loads(raw or "{}")
+        if not isinstance(data, dict):
+            return LessonContent()
+        return LessonContent.model_validate(data)
+    except Exception:
+        return LessonContent()
+
+
+def assignment_items_from_json(raw: str) -> list[AssignmentItem]:
+    """Parse stored JSON into AssignmentItems; corrupt data -> empty list."""
+    import json
+
+    try:
+        data = json.loads(raw or "[]")
+        if not isinstance(data, list):
+            return []
+        return [AssignmentItem.model_validate(d) for d in data
+                if isinstance(d, dict)]
+    except Exception:
+        return []
+
+
 def step_to_legacy(step: QuestionStep) -> dict[str, Any]:
     """Convert one QuestionStep to an expected_steps_json entry."""
     return {

@@ -17,6 +17,7 @@ a{color:var(--blue);text-decoration:none}
 .nav a{color:#d6e2fb;padding:11px 12px;border-radius:10px;font-weight:600}
 .nav a:hover{background:rgba(255,255,255,.08)}
 .nav a.active{background:var(--blue);color:#fff}
+.nav a.sub{padding:8px 12px 8px 34px;font-size:14px;font-weight:500}
 .side-user{margin-top:auto;background:rgba(255,255,255,.08);border-radius:12px;padding:12px;display:flex;gap:10px;align-items:center}
 .main{flex:1;padding:26px 28px;max-width:1240px}
 .topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px;flex-wrap:wrap}
@@ -86,6 +87,10 @@ th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--border)}
 .role-switch{display:flex;gap:8px}
 .role-switch a{padding:8px 14px;border-radius:999px;background:#fff;border:1px solid var(--border);font-weight:700;color:var(--ink)}
 .role-switch a.on{background:var(--navy);color:#fff}
+.sec-preview p{margin:6px 0}
+.sec-preview ol{margin:6px 0 6px 20px}
+.sec-edit{margin-top:8px}
+.sec-edit textarea{font-family:ui-monospace,Consolas,monospace;font-size:13px}
 .feature{display:flex;gap:12px;align-items:flex-start}
 .feature .ic{font-size:22px}
 footer{color:var(--muted);font-size:12px;margin-top:24px}

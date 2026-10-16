@@ -22,7 +22,8 @@
       <a href="/assignments" class="{% if nav=='practice' %}active{% endif %}">📝 Practice</a>
       <a href="/progress" class="{% if nav=='progress' %}active{% endif %}">📈 Progress</a>
       <a href="/materials" class="{% if nav=='materials' %}active{% endif %}">📖 Course Materials</a>
-      <a href="/instructor" class="{% if nav=='instructor' %}active{% endif %}">👩‍🏫 Instructor</a>
+      <a href="/instructor" class="{% if nav=='instructor' or nav=='instructor-dashboard' %}active{% endif %}">👩‍🏫 Instructor</a>
+      <a href="/instructor/dashboard" class="sub {% if nav=='instructor-dashboard' %}active{% endif %}">↳ Dashboard</a>
       <a href="/settings" class="{% if nav=='settings' %}active{% endif %}">⚙️ Settings</a>
     </nav>
     <div class="side-user"><span style="font-size:26px">🧑‍🎓</span><span><b>Alex Johnson</b><br><small style="color:#bcd0f5">Student</small></span></div>
@@ -30,8 +31,9 @@
   <main class="main">
     <div class="topbar">
       <div class="role-switch">
-        <a href="/" class="{% if nav!='instructor' %}on{% endif %}">Student view</a>
+        <a href="/" class="{% if nav!='instructor' and nav!='instructor-dashboard' %}on{% endif %}">Student view</a>
         <a href="/instructor" class="{% if nav=='instructor' %}on{% endif %}">Instructor view</a>
+        <a href="/instructor/dashboard" class="{% if nav=='instructor-dashboard' %}on{% endif %}">Instructor dashboard</a>
       </div>
       {% if demo is defined and demo %}
       <span class="pill">⚠️ Demo mode — add <code>NEBIUS_API_KEY</code> for live AI tutoring</span>

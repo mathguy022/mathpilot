@@ -1,5 +1,6 @@
 """Seed curated demo content: users, cone activity, materials. All synthetic."""
 import json
+from .courses import SUPPORTED_COURSES
 from .db import SessionLocal, User, Activity, CourseMaterial, Mastery, Course
 
 CONE_STEPS = [
@@ -26,6 +27,16 @@ CONE_HINTS = ["Conceptual question", "Specific hint", "Formula guidance", "Worke
 def seed():
     db = SessionLocal()
     try:
+        # Curriculum catalog is seeded independently so existing DBs pick
+        # up new courses on restart (idempotent by title).
+        existing = {c.title for c in db.query(Course).all()}
+        for meta in SUPPORTED_COURSES.values():
+            if meta["label"] not in existing:
+                db.add(Course(title=meta["label"], topic=meta["label"]))
+        # Legacy label: keep "Calculus I" working (catalog uses "Calculus 1").
+        if "Calculus I" not in existing and "Calculus 1" not in existing:
+            db.add(Course(title="Calculus I", topic="Calculus"))
+        db.commit()
         if db.query(User).first():
             return
         db.add_all([

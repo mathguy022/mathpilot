@@ -29,9 +29,10 @@ QUESTION = {
 def test_dashboard_renders():
     r = client.get("/instructor/dashboard")
     assert r.status_code == 200
-    assert "Generate" in r.text
-    assert "Lesson Canvas" in r.text
-    assert "Assign to Class" in r.text
+    assert "Generate Lesson" in r.text
+    assert "Create Assignment" in r.text
+    assert "Workspace Canvas" in r.text
+    assert "Review & Publish" in r.text
 
 
 def test_success_and_inspector():

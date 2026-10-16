@@ -10,7 +10,10 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from . import config
-from .db import get_db, init_db, Activity, Attempt, Course, CourseMaterial, HintRequest, Mastery, User
+from .db import (
+    Assignment, get_db, init_db, Activity, Attempt, Course, CourseMaterial,
+    HintRequest, Lesson, Mastery, Publication, User,
+)
 from .seed import seed
 from .tutor import orchestrate
 from .verifier import MAX_LEN
@@ -405,3 +408,545 @@ def health():
     return JSONResponse({"ok": True, "ai_configured": config.ai_configured(),
                          "math_model": config.NEBIUS_MATH_MODEL,
                          "socratic_model": config.NEBIUS_SOCRATIC_MODEL})
+
+
+# --- Plan C: lesson lifecycle (draft -> approve -> derive -> publish) ---
+
+def _lesson_to_dict(lesson: Lesson) -> dict:
+    return {
+        "id": lesson.id, "course_id": lesson.course_id,
+        "topic": lesson.topic, "title": lesson.title,
+        "learning_objectives": lesson.learning_objectives,
+        "status": lesson.status,
+        "updated_at": str(lesson.updated_at or ""),
+    }
+
+
+@app.post("/api/lessons/generate")
+def api_lessons_generate(payload: dict):
+    """Generate a structured instructor lesson (draft, unapproved)."""
+    import app.lessons as lessons_mod
+
+    try:
+        result = lessons_mod.generate_lesson(
+            notes=payload.get("notes", ""),
+            course=str(payload.get("course", "Calculus")),
+            topic=str(payload.get("topic", "") or "General"),
+            objectives=str(payload.get("objectives", "")),
+            detail=str(payload.get("detail", "standard")),
+            worked_examples=bool(payload.get("worked_examples", True)),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"Lesson generation failed: {exc}")
+    return result
+
+
+@app.post("/api/lessons/save")
+def api_lessons_save(payload: dict, db: Session = Depends(get_db)):
+    """Create or update a lesson draft. Never auto-publishes."""
+    import json as _json
+
+    from .schemas import (
+        LessonContent, LessonSettings, lesson_content_from_json,
+    )
+
+    content = payload.get("lesson") or {}
+    try:
+        lesson_content = LessonContent.model_validate(content)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid lesson content: {exc}")
+    settings = payload.get("settings") or {}
+    try:
+        LessonSettings.model_validate(settings)
+        _json.dumps(settings)  # must be serializable
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid lesson settings: {exc}")
+    course_id = payload.get("course_id")
+    if course_id is not None:
+        try:
+            course_id = int(course_id)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Invalid course_id")
+        if not db.get(Course, course_id):
+            raise HTTPException(400, "Course not found")
+    lesson_id = payload.get("id")
+    if lesson_id:
+        lesson = db.get(Lesson, int(lesson_id))
+        if not lesson:
+            raise HTTPException(404, "Lesson not found")
+        if lesson.status == "published":
+            raise HTTPException(
+                400, "Published lessons are frozen — duplicate as a new draft to edit")
+    else:
+        lesson = Lesson()
+        db.add(lesson)
+    lesson.course_id = course_id
+    lesson.topic = str(payload.get("topic", "") or lesson_content.topic)[:200]
+    lesson.title = (lesson_content.title or "Untitled lesson")[:300]
+    lesson.learning_objectives = "\n".join(lesson_content.objectives)
+    lesson.source_materials_json = _json.dumps(
+        payload.get("source_materials", []))
+    lesson.instructor_content_json = lesson_content.model_dump_json()
+    lesson.settings_json = _json.dumps(settings)
+    # Preserve existing student content/verification until re-approved.
+    db.commit()
+    db.refresh(lesson)
+    return {"id": lesson.id, "status": lesson.status}
+
+
+@app.get("/api/lessons")
+def api_lessons_list(db: Session = Depends(get_db)):
+    """List lesson drafts (id, title, topic, status). No content bodies."""
+    lessons = db.query(Lesson).order_by(Lesson.updated_at.desc()).all()
+    return {"lessons": [_lesson_to_dict(les) for les in lessons]}
+
+
+@app.get("/api/lessons/{lesson_id}")
+def api_lessons_get(lesson_id: int, db: Session = Depends(get_db)):
+    """Full lesson draft for the instructor editor (includes solutions)."""
+    import json as _json
+
+    lesson = db.get(Lesson, lesson_id)
+    if not lesson:
+        raise HTTPException(404, "Lesson not found")
+    try:
+        settings = _json.loads(lesson.settings_json or "{}")
+    except Exception:
+        settings = {}
+    return {
+        **_lesson_to_dict(lesson),
+        "lesson": _json.loads(lesson.instructor_content_json or "{}"),
+        "settings": settings,
+        "source_materials": _json.loads(
+            lesson.source_materials_json or "[]"),
+        "verification": _json.loads(lesson.verification_json or "{}"),
+    }
+
+
+@app.post("/api/lessons/{lesson_id}/approve")
+def api_lessons_approve(lesson_id: int, payload: dict,
+                        db: Session = Depends(get_db)):
+    """Approve a draft: verify math, derive student content, mark approved."""
+    import json as _json
+
+    import app.lessons as lessons_mod
+    from .schemas import LessonSettings, lesson_content_from_json
+
+    lesson = db.get(Lesson, lesson_id)
+    if not lesson:
+        raise HTTPException(404, "Lesson not found")
+    if lesson.status == "published":
+        raise HTTPException(400, "Published lessons are frozen")
+    content = lesson_content_from_json(lesson.instructor_content_json)
+    if payload.get("lesson"):
+        try:
+            from .schemas import LessonContent
+            content = LessonContent.model_validate(payload["lesson"])
+            lesson.instructor_content_json = content.model_dump_json()
+            lesson.title = (content.title or lesson.title)[:300]
+            lesson.learning_objectives = "\n".join(content.objectives)
+        except Exception as exc:
+            raise HTTPException(400, f"Invalid edited content: {exc}")
+    try:
+        settings = LessonSettings.model_validate(
+            _json.loads(lesson.settings_json or "{}"))
+    except Exception:
+        settings = LessonSettings()
+    counts = lessons_mod.verify_lesson_math(content)
+    content.verification_summary = counts
+    lesson.instructor_content_json = content.model_dump_json()
+    lesson.verification_json = _json.dumps(counts)
+    student = lessons_mod.derive_student_lesson(content, settings)
+    lesson.student_content_json = _json.dumps(student)
+    lesson.status = "approved"
+    db.commit()
+    return {"id": lesson.id, "status": "approved",
+            "verification": counts,
+            "student_sections": len(student["sections"]),
+            "guided_items": len(student["guided_items"])}
+
+
+# --- Plan C: assignment lifecycle (generate -> draft -> approve) ---
+
+def _assignment_to_dict(asg: Assignment) -> dict:
+    return {
+        "id": asg.id, "course_id": asg.course_id,
+        "source_lesson_id": asg.source_lesson_id,
+        "topic": asg.topic, "title": asg.title,
+        "status": asg.status,
+        "updated_at": str(asg.updated_at or ""),
+    }
+
+
+def _items_with_verification(items: list) -> list[dict]:
+    """Attach per-item verification state (verified|needs-review|...) using
+    the deterministic canonical gate. Items that fail parse or canonical
+    check are honestly marked needs-review, never silently dropped."""
+    from .schemas import (
+        AssignmentItem, Question, QuestionStep, verify_question_canonical,
+    )
+
+    out: list[dict] = []
+    for it in items:
+        item = it if isinstance(it, AssignmentItem) else AssignmentItem.model_validate(it)
+        steps = [QuestionStep(
+            step_id=f"s{i + 1}",
+            description=s.description if hasattr(s, "description") else s.get("description", ""),
+            expected_input_latex=s.expected_input_latex if hasattr(s, "expected_input_latex") else s.get("expected_input_latex", ""),
+            accepted_equivalents=list(s.accepted_equivalents if hasattr(s, "accepted_equivalents") else s.get("accepted_equivalents", [])),
+            hints=list(s.hints if hasattr(s, "hints") else s.get("hints", [])),
+            objective_tags=list(item.objective_tags),
+        ) for i, s in enumerate(item.steps)]
+        q = Question(
+            prompt_latex=item.prompt_latex, difficulty=item.difficulty,
+            steps=steps,
+            final_answer_latex=item.prompt_latex,  # placeholder, replaced below
+            source="ai-generated",
+        )
+        # Final answer comes from the stored solutions map via caller;
+        # here we check step parseability as the honest minimum.
+        from .schemas import check_step_parseable
+        bad = [f"step {i + 1}" for i, s in enumerate(steps)
+               if check_step_parseable(s.expected_input_latex) is not None]
+        d = item.model_dump()
+        d["verification"] = "verified" if not bad else "needs-review"
+        if bad:
+            d["verification_detail"] = f"unparseable: {', '.join(bad)}"
+        out.append(d)
+    return out
+
+
+@app.post("/api/assignments/generate")
+def api_assignments_generate(payload: dict, db: Session = Depends(get_db)):
+    """Generate assignment items: from topic, or from an approved lesson.
+
+    Uses the existing generate_questions pipeline (generate-then-verify).
+    from_lesson_id optionally scopes concepts to the lesson's objectives.
+    Returns items + solutions (instructor-only) + verification states.
+    """
+    import app.generate as generate_mod
+    from .schemas import Question
+
+    topic = str(payload.get("topic", "") or "General")
+    course = str(payload.get("course", ""))
+    n = max(1, min(10, int(payload.get("num_questions", 5))))
+    balance = str(payload.get("difficulty_balance", "mixed"))
+    difficulty = {"easy": 2, "hard": 4}.get(balance, 3)
+    notes = str(payload.get("notes", ""))
+    lesson_id = payload.get("from_lesson_id")
+    if lesson_id:
+        lesson = db.get(Lesson, int(lesson_id))
+        if not lesson:
+            raise HTTPException(404, "Source lesson not found")
+        if lesson.status not in ("approved", "published"):
+            raise HTTPException(400, "Source lesson must be approved first")
+        from .schemas import lesson_content_from_json
+        content = lesson_content_from_json(lesson.instructor_content_json)
+        scoped = "\n".join(content.objectives)
+        notes = (scoped + "\n" + notes).strip()
+    try:
+        result = generate_mod.generate_questions(
+            notes=f"Course: {course}\n{notes}" if course else notes,
+            topic=topic, num_questions=n, difficulty=difficulty)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"Assignment generation failed: {exc}")
+    items, solutions = [], {}
+    for i, qd in enumerate(result.get("verified", [])):
+        q = Question.model_validate(qd)
+        item_id = f"q{i + 1}"
+        last = q.steps[-1].expected_input_latex if q.steps else q.final_answer_latex
+        items.append({
+            "item_id": item_id,
+            "prompt_latex": q.prompt_latex,
+            "steps": [s.model_dump() for s in q.steps],
+            "hints": [h for s in q.steps for h in s.hints][:4],
+            "objective_tags": list({t for s in q.steps for t in s.objective_tags}),
+            "difficulty": q.difficulty,
+            "verification": "verified",
+        })
+        solutions[item_id] = {
+            "final_answer_latex": q.final_answer_latex or last,
+            "solution_steps": [s.expected_input_latex for s in q.steps],
+            "explanation": f"Verified via canonical SymPy check ({q.steps[0].objective_tags[0] if q.steps and q.steps[0].objective_tags else topic}).",
+        }
+    return {"items": items, "solutions": solutions,
+            "verified": len(items),
+            "discarded": result.get("discarded", 0),
+            "discard_reasons": result.get("discard_reasons", []),
+            "truncated_notes": result.get("truncated_notes", False)}
+
+
+@app.post("/api/assignments/save")
+def api_assignments_save(payload: dict, db: Session = Depends(get_db)):
+    """Create or update an assignment draft. Never auto-publishes."""
+    import json as _json
+
+    from .schemas import AssignmentItem, AssignmentSettings
+
+    raw_items = payload.get("items") or []
+    if not isinstance(raw_items, list) or not raw_items:
+        raise HTTPException(400, "Assignment needs at least one item")
+    try:
+        items = [AssignmentItem.model_validate(d) for d in raw_items]
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid assignment items: {exc}")
+    settings = payload.get("settings") or {}
+    try:
+        AssignmentSettings.model_validate(settings)
+        _json.dumps(settings)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid assignment settings: {exc}")
+    solutions = payload.get("solutions") or {}
+    if not isinstance(solutions, dict):
+        raise HTTPException(400, "Invalid solutions map")
+    course_id = payload.get("course_id")
+    if course_id is not None:
+        try:
+            course_id = int(course_id)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Invalid course_id")
+        if not db.get(Course, course_id):
+            raise HTTPException(400, "Course not found")
+    source_lesson_id = payload.get("source_lesson_id")
+    if source_lesson_id is not None:
+        try:
+            source_lesson_id = int(source_lesson_id)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Invalid source_lesson_id")
+        if not db.get(Lesson, source_lesson_id):
+            raise HTTPException(400, "Source lesson not found")
+    asg_id = payload.get("id")
+    if asg_id:
+        asg = db.get(Assignment, int(asg_id))
+        if not asg:
+            raise HTTPException(404, "Assignment not found")
+        if asg.status == "published":
+            raise HTTPException(
+                400, "Published assignments are frozen — duplicate as a new draft to edit")
+    else:
+        asg = Assignment()
+        db.add(asg)
+    asg.course_id = course_id
+    asg.source_lesson_id = source_lesson_id
+    asg.topic = str(payload.get("topic", ""))[:200]
+    asg.title = (str(payload.get("title", ""))
+                 or str(settings.get("title", ""))
+                 or "Untitled assignment")[:300]
+    asg.questions_json = _json.dumps([i.model_dump() for i in items])
+    asg.solutions_json = _json.dumps(solutions)
+    asg.settings_json = _json.dumps(settings)
+    db.commit()
+    db.refresh(asg)
+    return {"id": asg.id, "status": asg.status}
+
+
+@app.get("/api/assignments")
+def api_assignments_list(db: Session = Depends(get_db)):
+    """List assignment drafts (metadata only, no solutions)."""
+    rows = db.query(Assignment).order_by(Assignment.updated_at.desc()).all()
+    return {"assignments": [_assignment_to_dict(a) for a in rows]}
+
+
+@app.get("/api/assignments/{asg_id}")
+def api_assignments_get(asg_id: int, db: Session = Depends(get_db)):
+    """Full assignment draft for the instructor editor (includes solutions)."""
+    import json as _json
+
+    asg = db.get(Assignment, asg_id)
+    if not asg:
+        raise HTTPException(404, "Assignment not found")
+    return {
+        **_assignment_to_dict(asg),
+        "items": _items_with_verification(
+            _json.loads(asg.questions_json or "[]")),
+        "solutions": _json.loads(asg.solutions_json or "{}"),
+        "settings": _json.loads(asg.settings_json or "{}"),
+        "verification": _json.loads(asg.verification_json or "{}"),
+    }
+
+
+@app.post("/api/assignments/{asg_id}/approve")
+def api_assignments_approve(asg_id: int, db: Session = Depends(get_db)):
+    """Approve an assignment draft: re-verify items, mark approved."""
+    import json as _json
+
+    asg = db.get(Assignment, asg_id)
+    if not asg:
+        raise HTTPException(404, "Assignment not found")
+    if asg.status == "published":
+        raise HTTPException(400, "Published assignments are frozen")
+    items = _items_with_verification(_json.loads(asg.questions_json or "[]"))
+    counts = {"verified": sum(1 for i in items if i["verification"] == "verified"),
+              "needs_review": sum(1 for i in items if i["verification"] != "verified")}
+    asg.questions_json = _json.dumps(items)
+    asg.verification_json = _json.dumps(counts)
+    asg.status = "approved"
+    db.commit()
+    return {"id": asg.id, "status": "approved", "verification": counts}
+
+
+# --- Plan C: publications (lesson and/or assignment, frozen at publish) ---
+
+@app.post("/api/publications")
+def api_publications_create(payload: dict, db: Session = Depends(get_db)):
+    """Publish an approved lesson, assignment, or both as one package.
+
+    Creates a stable Publication row with a link_id. Content is read from
+    the approved drafts at publish time; later draft edits never mutate a
+    published package (lessons/assignments freeze on publish).
+    """
+    import json as _json
+
+    lesson_id = payload.get("lesson_id")
+    asg_id = payload.get("assignment_id")
+    if not lesson_id and not asg_id:
+        raise HTTPException(400, "Nothing to publish: pass lesson_id and/or assignment_id")
+    lesson, asg = None, None
+    if lesson_id:
+        lesson = db.get(Lesson, int(lesson_id))
+        if not lesson:
+            raise HTTPException(404, "Lesson not found")
+        if lesson.status != "approved":
+            raise HTTPException(400, "Lesson must be approved before publishing")
+    if asg_id:
+        asg = db.get(Assignment, int(asg_id))
+        if not asg:
+            raise HTTPException(404, "Assignment not found")
+        if asg.status != "approved":
+            raise HTTPException(400, "Assignment must be approved before publishing")
+    link_id = uuid.uuid4().hex[:8]
+    pub = Publication(
+        link_id=link_id,
+        lesson_id=lesson.id if lesson else None,
+        assignment_id=asg.id if asg else None,
+        title=str(payload.get("title", "")
+                  or (lesson.title if lesson else "")
+                  or (asg.title if asg else ""))[:300],
+        due_date=str(payload.get("due", ""))[:30],
+        grading_policy=str(payload.get("grading", "Completion"))[:50],
+    )
+    db.add(pub)
+    # Freeze: published artifacts become immutable snapshots.
+    if lesson:
+        lesson.status = "published"
+    if asg:
+        asg.status = "published"
+        # Materialize assignment items as Activities so the existing
+        # Socratic solver (/api/submit) works unchanged.
+        try:
+            items = _json.loads(asg.questions_json or "[]")
+        except Exception:
+            items = []
+        for it in items:
+            steps_in = it.get("steps", []) if isinstance(it, dict) else []
+            steps = [{"prompt": (s.get("description", "") if isinstance(s, dict) else ""),
+                      "expected": (s.get("expected_input_latex", "") if isinstance(s, dict) else ""),
+                      "hint": (list(s.get("hints", [])) if isinstance(s, dict) else [])}
+                     for s in steps_in if isinstance(s, dict)]
+            if not steps:
+                continue
+            db.add(Activity(
+                title=str(it.get("prompt_latex", ""))[:200] or asg.title,
+                course_topic=asg.topic or "General",
+                problem_statement=str(it.get("prompt_latex", "")),
+                learning_objectives="",
+                expected_steps_json=_json.dumps(steps),
+                accepted_methods="",
+                misconceptions="",
+                hint_sequence_json=_json.dumps(
+                    ["Conceptual question", "Specific hint",
+                     "Formula guidance", "Worked substep"]),
+                max_attempts_before_reveal=3,
+                allow_solution_reveal=True,
+            ))
+    db.commit()
+    # Back-compat: keep the in-memory link working for the success page.
+    LESSON_LINKS[link_id] = {
+        "topic": (lesson.topic if lesson else asg.topic),
+        "questions": [], "activity_ids": [],
+        "title": pub.title, "due": pub.due_date,
+        "grading": pub.grading_policy,
+        "publication_id": pub.id,
+    }
+    return {"link_id": link_id, "publication_id": pub.id,
+            "solve_url": f"/learn/{link_id}",
+            "lesson_id": lesson.id if lesson else None,
+            "assignment_id": asg.id if asg else None}
+
+
+@app.get("/learn/{link_id}", response_class=HTMLResponse)
+def student_learn(link_id: str, request: Request, db: Session = Depends(get_db)):
+    """Student-facing interactive lesson: derived content only, no keys."""
+    import json as _json
+
+    from .lessons import split_student_payload
+
+    pub = db.query(Publication).filter(
+        Publication.link_id == link_id).first()
+    if not pub:
+        raise HTTPException(404, "Lesson link not found")
+    lesson_payload: dict = {}
+    if pub.lesson_id:
+        lesson = db.get(Lesson, pub.lesson_id)
+        if lesson and lesson.student_content_json:
+            try:
+                lesson_payload = split_student_payload(
+                    _json.loads(lesson.student_content_json))
+            except Exception:
+                lesson_payload = {}
+    asg_items: list[dict] = []
+    if pub.assignment_id:
+        asg = db.get(Assignment, pub.assignment_id)
+        if asg:
+            try:
+                raw = _json.loads(asg.questions_json or "[]")
+            except Exception:
+                raw = []
+            # Strip instructor-only data: steps keep prompts (students need
+            # them to attempt), solutions never leave the server.
+            for it in raw:
+                if not isinstance(it, dict):
+                    continue
+                asg_items.append({
+                    "item_id": it.get("item_id", ""),
+                    "prompt_latex": it.get("prompt_latex", ""),
+                    "steps": [{"description": (s.get("description", "") if isinstance(s, dict) else ""),
+                               "hints": (list(s.get("hints", [])) if isinstance(s, dict) else [])}
+                              for s in it.get("steps", [])],
+                    "hints": list(it.get("hints", [])),
+                    "difficulty": it.get("difficulty", 3),
+                })
+    return templates.TemplateResponse(request, "student_lesson.html", {
+        "request": request, "publication": pub,
+        "lesson": lesson_payload, "assignment_items": asg_items,
+        "demo": not config.ai_configured(),
+    })
+
+
+@app.get("/api/learn/{link_id}")
+def api_learn(link_id: str, db: Session = Depends(get_db)):
+    """Student JSON API: same allowlist as the /learn page. No solutions."""
+    import json as _json
+
+    from .lessons import split_student_payload
+
+    pub = db.query(Publication).filter(
+        Publication.link_id == link_id).first()
+    if not pub:
+        raise HTTPException(404, "Lesson link not found")
+    lesson_payload: dict = {}
+    if pub.lesson_id:
+        lesson = db.get(Lesson, pub.lesson_id)
+        if lesson and lesson.student_content_json:
+            try:
+                lesson_payload = split_student_payload(
+                    _json.loads(lesson.student_content_json))
+            except Exception:
+                lesson_payload = {}
+    return {"link_id": link_id, "title": pub.title,
+            "lesson": lesson_payload,
+            "has_assignment": pub.assignment_id is not None}

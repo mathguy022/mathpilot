@@ -98,6 +98,71 @@ class Mastery(Base):
     score = Column(Float, default=0.0)
 
 
+class Lesson(Base):
+    """Instructor lesson: structured lecture notes + derived student content.
+
+    instructor_content_json holds the approved sections; student_content_json
+    holds the derived student-facing version (no answer keys). Status is
+    draft|approved|published. source_materials_json lists referenced
+    CourseMaterial ids/titles (never raw uploads).
+    """
+
+    __tablename__ = "lessons"
+    id = Column(Integer, primary_key=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)
+    topic = Column(String(200), default="")
+    title = Column(String(300), nullable=False, default="")
+    learning_objectives = Column(Text, default="")
+    source_materials_json = Column(Text, default="[]")
+    instructor_content_json = Column(Text, default="{}")
+    student_content_json = Column(Text, default="{}")
+    settings_json = Column(Text, default="{}")
+    verification_json = Column(Text, default="{}")
+    status = Column(String(20), default="draft")  # draft|approved|published
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class Assignment(Base):
+    """Standalone assignment artifact, optionally derived from a lesson.
+
+    questions_json holds student-visible items; solutions_json holds
+    instructor-only keys (never sent to student endpoints).
+    """
+
+    __tablename__ = "assignments"
+    id = Column(Integer, primary_key=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)
+    source_lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=True)
+    topic = Column(String(200), default="")
+    title = Column(String(300), nullable=False, default="")
+    questions_json = Column(Text, default="[]")
+    solutions_json = Column(Text, default="{}")
+    verification_json = Column(Text, default="{}")
+    settings_json = Column(Text, default="{}")
+    status = Column(String(20), default="draft")  # draft|approved|published
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class Publication(Base):
+    """One published package: a lesson, an assignment, or both together.
+
+    lesson_id/assignment_id reference frozen content snapshots; the link_id
+    is the stable student-facing delivery key (replaces in-memory links).
+    """
+
+    __tablename__ = "publications"
+    id = Column(Integer, primary_key=True)
+    link_id = Column(String(32), unique=True, nullable=False)
+    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=True)
+    title = Column(String(300), default="")
+    due_date = Column(String(30), default="")
+    grading_policy = Column(String(50), default="Completion")
+    created_at = Column(DateTime, default=utcnow)
+
+
 def get_db():
     db = SessionLocal()
     try:

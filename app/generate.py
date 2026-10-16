@@ -174,8 +174,14 @@ def generate_questions(notes: str, topic: str, num_questions: int = 5,
     bounded, truncated = bound_notes(notes)
     n = max(1, min(MAX_CANDIDATES, int(num_questions or 5)))
     difficulty = max(1, min(5, int(difficulty or 3)))
+    from .courses import course_context
+    course_label = ""
+    for line in (bounded.splitlines()[:2] if bounded else []):
+        if line.lower().startswith("course:"):
+            course_label = line.split(":", 1)[1].strip()
     user_prompt = (
         f"Topic: {topic}\nDifficulty (1-5): {difficulty}\n"
+        f"{course_context(course_label or topic)}\n"
         f"Generate {n} problems based on these notes:\n{bounded}"
     )
     raw = nebius._chat(

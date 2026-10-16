@@ -1,125 +1,249 @@
-{% extends "base.html" %}{% set nav='instructor' %}
-{% block title %}Instructor Dashboard{% endblock %}
+{% extends "base.html" %}{% set nav='instructor-dashboard' %}
+{% block title %}Instructor Dashboard — Lesson & Assignment Builder{% endblock %}
 {% block content %}
 <h1>Instructor Dashboard</h1>
-<p class="muted">Controls on the left, lesson canvas on the right. Demo only: links are in-memory and clear on restart.</p>
+<p class="muted">Build lessons and assignments from the same course + topic. Drafts persist in the database — refresh-safe.</p>
 <div class="split">
 <aside class="admin-panel">
-  <section class="card"><h3>1 · Generation</h3>
-  <label for="les-notes">Lecture notes context</label>
-  <textarea id="les-notes" rows="5" placeholder="Paste lecture notes…"></textarea>
-  <label for="les-topic">Topic</label>
-  <select id="les-topic">
-  <option>Pre-Algebra</option><option>Algebra 1</option><option>Algebra 2</option>
-  <option>Geometry</option><option>Trigonometry</option><option selected>Calculus 1</option>
-  </select>
-  <label for="les-count">Number of questions</label>
-  <input id="les-count" type="number" min="1" max="10" value="5">
-  <div class="row" style="margin-top:10px"><button class="btn small" id="genBtn" onclick="genLesson()">✨ Generate &amp; Verify Lesson</button></div>
-  <div id="les-out" style="margin-top:8px"><p class="muted">No drafts yet.</p></div></section>
-  <section class="card"><h3>2 · Configuration</h3>
-  <label class="check"><input type="checkbox" id="cfg-worked" checked style="width:auto"> Include worked example (first question as demo)</label>
+  <section class="card"><h3>Course & Topic</h3>
+  <label for="les-course">Course</label>
+  <select id="les-course" onchange="updateTopicHint()">{% for c in courses %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}</select>
+  <label for="les-topic">Topic <small class="muted" id="topic-hint"></small></label>
+  <input id="les-topic" placeholder="e.g. Limits" value="Limits">
+  <label for="les-objectives">Learning objectives (optional)</label>
+  <textarea id="les-objectives" rows="2" placeholder="One per line…"></textarea>
+  <label for="les-notes">Lecture notes / source material (optional)</label>
+  <textarea id="les-notes" rows="4" placeholder="Paste lecture notes… (treated as subject matter only)"></textarea>
+  </section>
+  <section class="card"><h3>📖 Lesson</h3>
+  <label for="les-detail">Lesson depth</label>
+  <select id="les-detail"><option value="brief">Brief</option><option value="standard" selected>Standard</option><option value="detailed">Detailed</option></select>
+  <label class="check"><input type="checkbox" id="les-worked" checked style="width:auto"> Require worked examples</label>
+  <div class="row" style="margin-top:10px"><button class="btn small" id="genLessonBtn" onclick="genLesson()">📖 Generate Lesson</button></div>
+  <div id="les-out" style="margin-top:8px"><p class="muted">No lesson draft yet.</p></div></section>
+  <section class="card"><h3>📝 Assignment</h3>
+  <label for="asg-count">Number of questions</label>
+  <input id="asg-count" type="number" min="1" max="10" value="5">
   <label>Difficulty balance</label>
   <div class="row" role="radiogroup" aria-label="Difficulty balance">
   <label class="check"><input type="radio" name="cfg-diff" value="mixed" checked style="width:auto"> Mixed</label>
   <label class="check"><input type="radio" name="cfg-diff" value="easy" style="width:auto"> Easy focus</label>
   <label class="check"><input type="radio" name="cfg-diff" value="hard" style="width:auto"> Hard focus</label>
-  </div></section>
-  <section class="card"><h3>3 · Publishing</h3>
-  <label for="pub-title">Assignment title</label>
-  <input id="pub-title" placeholder="e.g. Week 3 — Systems practice">
+  </div>
+  <label class="check"><input type="checkbox" id="asg-from-lesson" style="width:auto"> Generate from approved lesson (uses its concepts)</label>
+  <div class="row" style="margin-top:10px"><button class="btn small" id="genAsgBtn" onclick="genAssignment()">📝 Create Assignment</button></div>
+  <div id="asg-out" style="margin-top:8px"><p class="muted">No assignment draft yet.</p></div></section>
+  <section class="card"><h3>🚀 Review & Publish</h3>
+  <div class="row"><button class="btn small ghost" id="approveBtn" onclick="approveLesson()" disabled>✓ Approve Lesson</button></div>
+  <div class="row" style="margin-top:8px"><button class="btn small ghost" id="approveAsgBtn" onclick="approveAssignment()" disabled>✓ Approve Assignment</button></div>
+  <label for="pub-title" style="margin-top:10px">Package title</label>
+  <input id="pub-title" placeholder="e.g. Week 3 — Limits">
   <label for="pub-due">Due date</label>
   <input id="pub-due" type="date">
   <label for="pub-grade">Grading policy</label>
   <select id="pub-grade"><option>Completion</option><option>Mastery</option></select>
-  <div class="row" style="margin-top:10px"><button class="btn small" id="assignBtn" onclick="assignLesson()" disabled>📢 Assign to Class</button></div>
-  <div id="assign-out"></div></section>
+  <div class="row" style="margin-top:10px">
+    <button class="btn small" id="pubLessonBtn" onclick="publishSel('lesson')" disabled>Publish Lesson</button>
+    <button class="btn small" id="pubAsgBtn" onclick="publishSel('assignment')" disabled>Publish Assignment</button>
+    <button class="btn small" id="pubBothBtn" onclick="publishSel('both')" disabled>Publish Both</button>
+  </div>
+  <div id="pub-out" style="margin-top:8px"></div></section>
+  <section class="card"><h3>📂 Saved Drafts</h3>
+  <div class="row"><button class="btn small ghost" onclick="loadDrafts()">↻ Refresh list</button></div>
+  <div id="drafts-out" style="margin-top:8px"><p class="muted">Click refresh to list saved drafts.</p></div></section>
 </aside>
-<main class="canvas"><div class="card canvas-head"><h3>Lesson Canvas</h3>
-<p class="muted" id="canvas-meta">Nothing generated yet.</p></div>
-<div id="preview"><div class="card empty-state">
+<main class="canvas">
+<div class="card canvas-head"><h3>Workspace Canvas</h3>
+<p class="muted" id="canvas-meta">Nothing loaded yet. Generate a lesson or an assignment.</p>
+<div class="row" role="tablist" aria-label="Canvas view">
+<button class="btn small ghost" id="tabLesson" onclick="showTab('lesson')">📖 Lesson</button>
+<button class="btn small ghost" id="tabAsg" onclick="showTab('assignment')">📝 Assignment</button>
+</div></div>
+<div id="preview-lesson"><div class="card empty-state">
 <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.5;margin-bottom:12px"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
 <p style="font-size:18px;font-weight:700">No lesson loaded</p>
-<p class="muted">Enter context on the left and click Generate.</p></div></div></main>
+<p class="muted">Select course + topic and click Generate Lesson.</p></div></div>
+<div id="preview-asg" style="display:none"><div class="card empty-state">
+<p style="font-size:18px;font-weight:700">No assignment loaded</p>
+<p class="muted">Set question count and click Create Assignment.</p></div></div>
+</main>
 </div>
 <script>
-let DRAFTS=[];
+let LESSON=null, LESSON_ID=null, LESSON_STATUS='';
+let ASSIGN=null, ASSIGN_ID=null, ASSIGN_STATUS='';
+let TAB='lesson';
 function toast(msg){ const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
  document.body.appendChild(t); setTimeout(()=>t.remove(),4000); }
 function esc(s){ return String(s).replace(/</g,'&lt;'); }
-// Wrap bare math-only fields in $...$ so KaTeX auto-render picks them up.
-// Fields already containing delimiters pass through untouched.
 function asMath(s){ s=String(s==null?"":s).trim(); if(!s) return "";
  if(/\$|\\\(|\\\[/.test(s)) return s; return "$"+s+"$"; }
-window.asMath=asMath;
-function tagsOf(q){ const tags=new Set();
- (q.steps||[]).forEach(s=>{(s.objective_tags||[]).forEach(t=>tags.add(t));});
- return [...tags].slice(0,4).map(t=>'<span class="tag">'+esc(t)+'</span>').join(''); }
-function stepsHtml(q){ return '<details class="steps"><summary>Solution steps ('+q.steps.length+')</summary><ol>'
- +(q.steps||[]).map(s=>'<li><span class="step-math">'
-  +esc(asMath(s.expected_input_latex||''))+'</span><br><small class="muted">'+esc(s.description||'')+'</small></li>').join('')
- +'</ol></details>'; }
+function courseName(){ const el=document.getElementById('les-course');
+ return el.options[el.selectedIndex]?el.options[el.selectedIndex].text:''; }
+// Per-course topic suggestions (single source: mirrors app/courses.py).
+const COURSE_TOPICS={"Pre-Algebra":["Order of Operations","Fractions & Decimals","Basic Linear Equations"],"Algebra 1":["Linear Equations","Systems of Equations","Factoring Polynomials","Quadratics"],"Algebra 2":["Logarithms & Exponentials","Complex Numbers","Conic Sections","Rational Functions"],"Trigonometry":["Unit Circle Basics","Trig Identities","Law of Sines/Cosines","Inverse Trig"],"Pre-Calculus":["Function Analysis","Vectors & Matrices","Polar Coordinates","Intro to Limits"],"Calculus 1":["Limits & Continuity","Derivatives","Applications of Derivatives","Integrals"],"Calculus I":["Limits & Continuity","Derivatives","Applications of Derivatives","Integrals"]};
+function updateTopicHint(){ const t=document.getElementById('topic-hint');
+ const sug=COURSE_TOPICS[courseName()];
+ t.textContent=sug?('Try: '+sug.slice(0,3).join(' · ')):'';
+ const inp=document.getElementById('les-topic');
+ if(sug&&!sug.some(s=>inp.value.toLowerCase().includes(s.split(' ')[0].toLowerCase()))){ inp.placeholder='e.g. '+sug[0]; } }
+window.addEventListener('load',updateTopicHint);
 function diffLevel(){ const el=document.querySelector('input[name="cfg-diff"]:checked'); return el?el.value:'mixed'; }
-function renderCanvas(){
- const prev=document.getElementById('preview');
- const meta=document.getElementById('canvas-meta');
- const worked=document.getElementById('cfg-worked').checked;
- if(!DRAFTS.length){ prev.innerHTML='<div class="card empty-state">'
-  +'<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.5;margin-bottom:12px"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>'
-  +'<p style="font-size:18px;font-weight:700">No lesson loaded</p>'
-  +'<p class="muted">Enter context on the left and click Generate.</p></div>';
-  meta.textContent='Nothing generated yet.'; return; }
- meta.textContent=DRAFTS.length+' verified question(s) · '+diffLevel()+' difficulty';
- const start=worked?1:0;
- let html='';
- if(worked&&DRAFTS.length){ const w=DRAFTS[0];
-  html+='<div class="card worked"><h3>Worked Example</h3>'
-  +'<math-field readonly class="readonly-math-display">'+esc(w.prompt_latex)+'</math-field>'
-  +stepsHtml(w)+'</div>'; }
- html+=DRAFTS.slice(start).map((q,k)=>{const i=worked?k+1:k;
-  return '<div class="card qcard" data-i="'+i+'"><p><b>Q'+(k+1)+'</b> '+tagsOf(q)
-  +'<span class="badge correct">✓ SymPy Verified</span>'
-  +'<span class="qactions"><button class="btn small ghost" onclick="moveDraft('+i+',-1)" aria-label="Move up">↑</button>'
-  +'<button class="btn small ghost" onclick="moveDraft('+i+',1)" aria-label="Move down">↓</button>'
-  +'<button class="btn small ghost" onclick="delDraft('+i+')" aria-label="Delete">✕</button></span><br>'
-  +'<math-field readonly class="readonly-math-display">'+esc(q.prompt_latex)+'</math-field>'
-  +'<br><small class="muted">Answer: '+esc(asMath(q.final_answer_latex))+'</small></p>'
-  +stepsHtml(q)+'</div>';}).join('');
- prev.innerHTML=html||'<div class="card empty-state"><p class="muted">All drafts removed — generate again or assign nothing.</p></div>';
- if(window.renderMath) window.renderMath(prev);
- prev.querySelectorAll('details.steps').forEach(d=>d.addEventListener('toggle',()=>{ if(window.renderMath) window.renderMath(d); }));
- document.getElementById('assignBtn').disabled=!DRAFTS.length;
-}
-function moveDraft(i,d){ const j=i+d; if(j<0||j>=DRAFTS.length) return;
- const t=DRAFTS[i]; DRAFTS[i]=DRAFTS[j]; DRAFTS[j]=t; renderCanvas(); }
-function delDraft(i){ DRAFTS.splice(i,1); renderCanvas();
- document.getElementById('assignBtn').disabled=!DRAFTS.length; }
+function showTab(t){ TAB=t;
+ document.getElementById('preview-lesson').style.display=t==='lesson'?'block':'none';
+ document.getElementById('preview-asg').style.display=t==='assignment'?'block':'none'; }
+// Minimal markdown-lite: escape HTML, then paragraphs / numbered items /
+// bold / inline code. $...$ and $$...$$ pass through for KaTeX.
+function renderPreview(src){ let h=esc(src);
+ h=h.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');
+ const lines=h.split('\n'); let out='', inList=false;
+ for(const ln of lines){ const t=ln.trim();
+  const item=t.match(/^(?:\d+[.)]|[-*])\s+(.*)$/);
+  if(item){ if(!inList){ out+='<ol>'; inList=true; } out+='<li>'+item[1]+'</li>'; }
+  else { if(inList){ out+='</ol>'; inList=false; }
+   if(t) out+='<p>'+t+'</p>'; } }
+ if(inList) out+='</ol>';
+ return out||'<p class="muted">Empty section.</p>'; }
+function updatePreview(ta){ const card=ta.closest('[data-sec-card]');
+ const pv=card?card.querySelector('.sec-preview'):null;
+ if(pv){ pv.innerHTML=renderPreview(ta.value);
+  if(window.renderMath) window.renderMath(pv); } }
+function vbadge(v){ const c=v==='verified'?'correct':(v==='unable-to-verify'?'incomplete':'incorrect');
+ return '<span class="badge '+c+'">'+esc(v)+'</span>'; }
+// --- Lesson ---
 async function genLesson(){ const out=document.getElementById('les-out');
- const btn=document.getElementById('genBtn'); btn.disabled=true; DRAFTS=[]; renderCanvas();
- const n=Math.max(1,Math.min(10,parseInt(document.getElementById('les-count').value||'5')));
- const bal=diffLevel(); const diffTarget=bal==='easy'?2:(bal==='hard'?4:3);
- out.innerHTML='<p class="muted"><span class="spinner"></span>Generating… Verifying with SymPy…</p>';
- try{ const r=await fetch('/api/generate-questions',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({topic:document.getElementById('les-topic').value,notes:document.getElementById('les-notes').value,num_questions:n,difficulty:diffTarget})});
+ const btn=document.getElementById('genLessonBtn'); btn.disabled=true;
+ out.innerHTML='<p class="muted"><span class="spinner"></span>Generating lesson…</p>';
+ try{ const r=await fetch('/api/lessons/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({course:courseName(),topic:document.getElementById('les-topic').value,
+   objectives:document.getElementById('les-objectives').value,notes:document.getElementById('les-notes').value,
+   detail:document.getElementById('les-detail').value,worked_examples:document.getElementById('les-worked').checked})});
   const j=await r.json();
-  if(!r.ok){ out.innerHTML='<p class="muted">No drafts yet.</p>'; toast('Error: '+(j.detail||'failed')); btn.disabled=false; return; }
-  if(!j.verified.length){ out.innerHTML='<p class="muted">No drafts yet.</p>';
-   document.getElementById('preview').innerHTML='<p class="muted">No verified drafts. Discarded '+j.discarded+'. '+esc((j.discard_reasons||[]).join(' '))+'</p>';
-   btn.disabled=false; return; }
-  DRAFTS=j.verified; renderCanvas();
-  out.innerHTML='<p><small class="muted">'+j.verified.length+' verified, '+j.discarded+' discarded ('+bal+').</small></p>';
-  document.getElementById('assignBtn').disabled=false;
+  if(!r.ok){ out.innerHTML='<p class="muted">No lesson draft.</p>'; toast('Error: '+(j.detail||'failed')); btn.disabled=false; return; }
+  LESSON=j.lesson; LESSON_ID=null; LESSON_STATUS='unsaved';
+  renderLesson(); showTab('lesson');
+  out.innerHTML='<p class="muted">Lesson generated'+(j.truncated_notes?' (notes truncated to 4000 chars)':'')+'. Review, then Save Draft.</p>'
+   +'<div class="row" style="margin-top:6px"><button class="btn small" onclick="saveLesson()">💾 Save Draft</button></div>';
  }catch(e){ toast('Request failed.'); }
  btn.disabled=false; }
-async function assignLesson(){ const box=document.getElementById('assign-out');
- box.innerHTML='<p class="muted">Assigning…</p>';
- try{ const r=await fetch('/api/lessons/assign',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({topic:document.getElementById('les-topic').value,questions:DRAFTS,
-   title:document.getElementById('pub-title').value, due:document.getElementById('pub-due').value,
-   grading:document.getElementById('pub-grade').value, difficulty_balance:diffLevel(),
-   worked_example:document.getElementById('cfg-worked').checked})});
+function renderLesson(){ const prev=document.getElementById('preview-lesson');
+ const meta=document.getElementById('canvas-meta');
+ if(!LESSON){ prev.innerHTML='<div class="card empty-state"><p class="muted">No lesson loaded.</p></div>'; return; }
+ meta.textContent=(LESSON.title||'Untitled')+' · '+(LESSON.sections||[]).length+' sections · '+(LESSON_STATUS||'unsaved');
+ let html='<div class="card"><h3>'+esc(LESSON.title||'Untitled lesson')+'</h3>'
+  +'<p class="muted">'+esc(LESSON.course||'')+' · '+esc(LESSON.topic||'')+'</p>'
+  +'<label for="edit-title">Title (editable)</label><input id="edit-title" value="'+esc(LESSON.title||'')+'"></div>';
+ html+=(LESSON.sections||[]).map((s,si)=>{
+  let h='<div class="card lesson-sec" style="margin-top:12px" data-sec-card="'+si+'"><h3>'+esc(s.heading||s.kind)+' <small class="muted">'+esc(s.kind)+'</small></h3>';
+  h+='<div class="sec-preview">'+renderPreview(s.body_markdown||'')+'</div>';
+  h+='<details class="sec-edit"><summary><small class="muted">Edit source (markdown + LaTeX)</small></summary><textarea rows="4" data-sec="'+si+'" class="sec-body" oninput="updatePreview(this)">'+esc(s.body_markdown||'')+'</textarea></details>';
+  (s.examples||[]).forEach((e,ei)=>{ h+='<details class="steps" style="margin-top:8px"><summary>Worked example '+(ei+1)+' '+vbadge(e.verification||'needs-review')+'</summary>'
+   +'<p><b>Problem:</b> '+esc(asMath(e.problem_latex))+'</p><ol>'
+   +(e.steps||[]).map(st=>'<li>'+esc(asMath(st.expression))+'<br><small class="muted">'+esc(st.why||'')+'</small></li>').join('')
+   +'</ol><p><b>Answer:</b> '+esc(asMath(e.final_answer_latex))+'</p></details>'; });
+  (s.math_latex||[]).forEach(m=>{ h+='<p>'+esc(asMath(m))+'</p>'; });
+  return h+'</div>'; }).join('');
+ prev.innerHTML=html;
+ if(window.renderMath) window.renderMath(prev);
+ document.getElementById('approveBtn').disabled=!LESSON_ID;
+ refreshPublish(); }
+function collectEdits(){ if(!LESSON) return;
+ const t=document.getElementById('edit-title'); if(t) LESSON.title=t.value;
+ document.querySelectorAll('.sec-body').forEach(el=>{ const i=parseInt(el.dataset.sec); if(LESSON.sections[i]) LESSON.sections[i].body_markdown=el.value; }); }
+async function saveLesson(){ if(!LESSON){ toast('Generate a lesson first.'); return; }
+ collectEdits();
+ try{ const r=await fetch('/api/lessons/save',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({id:LESSON_ID,course_id:parseInt(document.getElementById('les-course').value)||null,
+   topic:document.getElementById('les-topic').value,lesson:LESSON,settings:{},source_materials:[]})});
+  const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
+  LESSON_ID=j.id; LESSON_STATUS=j.status; renderLesson();
+  document.getElementById('les-out').innerHTML='<p class="muted">Draft saved (id '+j.id+').</p>';
+ }catch(e){ toast('Request failed.'); } }
+async function approveLesson(){ if(!LESSON_ID){ toast('Save a draft first.'); return; }
+ collectEdits();
+ try{ const r=await fetch('/api/lessons/'+LESSON_ID+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({lesson:LESSON})});
+  const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
+  LESSON_STATUS='approved'; renderLesson();
+  toast('Approved: '+j.verification.verified+' verified, '+j.guided_items+' guided items.');
+ }catch(e){ toast('Request failed.'); } }
+// --- Assignment ---
+async function genAssignment(){ const out=document.getElementById('asg-out');
+ const btn=document.getElementById('genAsgBtn'); btn.disabled=true;
+ const n=Math.max(1,Math.min(10,parseInt(document.getElementById('asg-count').value||'5')));
+ out.innerHTML='<p class="muted"><span class="spinner"></span>Generating assignment… Verifying with SymPy…</p>';
+ try{ const r=await fetch('/api/assignments/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({course:courseName(),topic:document.getElementById('les-topic').value,
+   notes:document.getElementById('les-notes').value,num_questions:n,
+   difficulty_balance:diffLevel(),from_lesson_id:document.getElementById('asg-from-lesson').checked?LESSON_ID:null})});
+  const j=await r.json();
+  if(!r.ok){ out.innerHTML='<p class="muted">No assignment draft.</p>'; toast('Error: '+(j.detail||'failed')); btn.disabled=false; return; }
+  ASSIGN={items:j.items,settings:{title:'',due_date:'',attempts_allowed:1,grading_policy:'Completion',hints_enabled:true,solution_release:'after-due'}};
+  ASSIGN_ID=null; ASSIGN_STATUS='unsaved';
+  renderAssign(); showTab('assignment');
+  out.innerHTML='<p class="muted">'+j.items.length+' items, '+j.verified+' verified, '+j.discarded+' discarded.</p>'
+   +'<div class="row" style="margin-top:6px"><button class="btn small" onclick="saveAssignment()">💾 Save Draft</button></div>';
+  if((j.discard_reasons||[]).length) out.innerHTML+='<details><summary><small class="muted">Discard reasons</small></summary><pre>'+esc(j.discard_reasons.join('\n'))+'</pre></details>';
+ }catch(e){ toast('Request failed.'); }
+ btn.disabled=false; }
+function renderAssign(){ const prev=document.getElementById('preview-asg');
+ if(!ASSIGN){ prev.innerHTML='<div class="card empty-state"><p class="muted">No assignment loaded.</p></div>'; return; }
+ document.getElementById('canvas-meta').textContent='Assignment draft · '+(ASSIGN.items||[]).length+' items · '+(ASSIGN_STATUS||'unsaved');
+ prev.innerHTML=(ASSIGN.items||[]).map((q,i)=>'<div class="card" style="margin-top:12px"><p><b>Q'+(i+1)+'</b> '+vbadge(q.verification||'needs-review')
+  +'<span class="qactions"><button class="btn small ghost" onclick="moveItem('+i+',-1)">↑</button>'
+  +'<button class="btn small ghost" onclick="moveItem('+i+',1)">↓</button>'
+  +'<button class="btn small ghost" onclick="delItem('+i+')">✕</button></span><br>'
+  +esc(asMath(q.prompt_latex))+'<br><small class="muted">Difficulty '+q.difficulty+' · '+(q.steps||[]).length+' steps</small></p>'
+  +'<details class="steps"><summary>Steps</summary><ol>'+(q.steps||[]).map(s=>'<li>'+esc(s.description||'')+' → '+esc(asMath(s.expected_input_latex))+'</li>').join('')+'</ol></details></div>').join('')
+  ||'<div class="card empty-state"><p class="muted">All items removed.</p></div>';
+ if(window.renderMath) window.renderMath(prev);
+ document.getElementById('approveAsgBtn').disabled=!ASSIGN_ID;
+ refreshPublish(); }
+function moveItem(i,d){ const j=i+d; if(j<0||j>=ASSIGN.items.length) return;
+ const t=ASSIGN.items[i]; ASSIGN.items[i]=ASSIGN.items[j]; ASSIGN.items[j]=t; renderAssign(); }
+function delItem(i){ ASSIGN.items.splice(i,1); renderAssign(); }
+async function saveAssignment(){ if(!ASSIGN){ toast('Create an assignment first.'); return; }
+ try{ const r=await fetch('/api/assignments/save',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({id:ASSIGN_ID,course_id:parseInt(document.getElementById('les-course').value)||null,
+   source_lesson_id:document.getElementById('asg-from-lesson').checked?LESSON_ID:null,
+   topic:document.getElementById('les-topic').value,title:document.getElementById('pub-title').value||'Untitled assignment',
+   items:ASSIGN.items,settings:ASSIGN.settings})});
+  const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
+  ASSIGN_ID=j.id; ASSIGN_STATUS=j.status; renderAssign();
+  document.getElementById('asg-out').innerHTML='<p class="muted">Draft saved (id '+j.id+').</p>';
+ }catch(e){ toast('Request failed.'); } }
+async function approveAssignment(){ if(!ASSIGN_ID){ toast('Save a draft first.'); return; }
+ try{ const r=await fetch('/api/assignments/'+ASSIGN_ID+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
+  ASSIGN_STATUS='approved'; renderAssign(); toast('Assignment approved.');
+ }catch(e){ toast('Request failed.'); } }
+// --- Publishing ---
+function refreshPublish(){
+ document.getElementById('pubLessonBtn').disabled=!(LESSON_STATUS==='approved');
+ document.getElementById('pubAsgBtn').disabled=!(ASSIGN_STATUS==='approved');
+ document.getElementById('pubBothBtn').disabled=!(LESSON_STATUS==='approved'&&ASSIGN_STATUS==='approved'); }
+async function publishSel(which){ const box=document.getElementById('pub-out');
+ box.innerHTML='<p class="muted">Publishing…</p>';
+ const body={title:document.getElementById('pub-title').value,due:document.getElementById('pub-due').value,
+  grading:document.getElementById('pub-grade').value};
+ if(which==='lesson'||which==='both') body.lesson_id=LESSON_ID;
+ if(which==='assignment'||which==='both') body.assignment_id=ASSIGN_ID;
+ try{ const r=await fetch('/api/publications',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); box.innerHTML=''; return; }
   window.location.href='/success/'+j.link_id;
  }catch(e){ toast('Request failed.'); box.innerHTML=''; } }
+// --- Drafts ---
+async function loadDrafts(){ const box=document.getElementById('drafts-out');
+ box.innerHTML='<p class="muted">Loading…</p>';
+ try{ const [l,a]=await Promise.all([fetch('/api/lessons').then(r=>r.json()),fetch('/api/assignments').then(r=>r.json())]);
+  box.innerHTML='<p><b>Lessons</b></p>'+(l.lessons||[]).map(x=>'<p><small>'+esc(x.title||('Lesson '+x.id))+' · '+esc(x.topic)+' · '+esc(x.status)+'</small> <button class="btn small ghost" onclick="openLesson('+x.id+')">Open</button></p>').join('')+'<p><b>Assignments</b></p>'+(a.assignments||[]).map(x=>'<p><small>'+esc(x.title||('Assignment '+x.id))+' · '+esc(x.topic)+' · '+esc(x.status)+'</small> <button class="btn small ghost" onclick="openAssign('+x.id+')">Open</button></p>').join('');
+ }catch(e){ box.innerHTML='<p class="muted">Failed to load.</p>'; } }
+async function openLesson(id){ try{ const r=await fetch('/api/lessons/'+id); const j=await r.json();
+  if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
+  LESSON=j.lesson; LESSON_ID=j.id; LESSON_STATUS=j.status; renderLesson(); showTab('lesson');
+ }catch(e){ toast('Request failed.'); } }
+async function openAssign(id){ try{ const r=await fetch('/api/assignments/'+id); const j=await r.json();
+  if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
+  ASSIGN={items:j.items,settings:j.settings}; ASSIGN_ID=j.id; ASSIGN_STATUS=j.status; renderAssign(); showTab('assignment');
+ }catch(e){ toast('Request failed.'); } }
 </script>
 {% endblock %}
