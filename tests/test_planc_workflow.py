@@ -105,6 +105,21 @@ def test_publish_requires_approval():
     lid = r.json()["id"]
     p = client.post("/api/publications", json={"lesson_id": lid})
     assert p.status_code == 400
+    # Assign also requires approval, and requires a due date.
+    assert client.post("/api/assign", json={
+        "lesson_id": lid, "due": "2026-12-01"}).status_code == 400
+    appr = client.post(f"/api/lessons/{lid}/approve",
+                       json={"lesson": dict(LESSON, title="Unapproved")})
+    assert appr.status_code == 200
+    nodue = client.post("/api/assign", json={"lesson_id": lid})
+    assert nodue.status_code == 400
+    a = client.post("/api/assign", json={
+        "lesson_id": lid, "course": "Calculus 1", "due": "2026-12-01"})
+    assert a.status_code == 200, a.text
+    assert a.json()["due"] == "2026-12-01"
+    assert a.json()["course"] == "Calculus 1"
+    page = client.get(f"/learn/{a.json()['link_id']}")
+    assert page.status_code == 200
 
 
 def test_bad_links_404():

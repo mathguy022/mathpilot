@@ -25,8 +25,50 @@ from .schemas import (
 )
 
 MAX_NOTES_CHARS = 4000
-GEN_MAX_TOKENS = 4000
+GEN_MAX_TOKENS = 7500
 
+
+def close_truncated_json(s: str) -> str:
+    """If JSON was truncated while generating sections, salvage all complete ones."""
+    s = s.strip()
+    last_sec = s.rfind('},\n')
+    if last_sec == -1:
+        last_sec = s.rfind('},')
+    if last_sec != -1:
+        return s[:last_sec+1] + '\n]}'
+    return s
+
+
+def repair_json_escapes(raw: str) -> str:
+    """Repair lone unescaped backslashes in JSON (e.g. \\lim, \\alpha) without breaking \\\\."""
+    # Fix lone backslashes not followed by valid JSON escape character
+    return re.sub(r'(?<!\\)\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})', r'\\\\', raw)
+
+
+def parse_lesson(raw: str) -> LessonContent:
+    """Validate model output into LessonContent; raises ValueError."""
+    from .generate import strip_fences
+
+    stripped = strip_fences(raw)
+    data = None
+    try:
+        data = json.loads(stripped)
+    except Exception:
+        # Step 1: try lone escape repair
+        repaired = repair_json_escapes(stripped)
+        try:
+            data = json.loads(repaired)
+        except Exception:
+            # Step 2: try salvaging complete sections from truncated output
+            salvaged = close_truncated_json(repaired)
+            try:
+                data = json.loads(salvaged)
+            except Exception:
+                # Step 3: try salvaging directly from stripped
+                data = json.loads(close_truncated_json(stripped))
+
+    if not isinstance(data, dict):
+        raise ValueError("lesson output is not a JSON object")
 LESSON_SYSTEM = (
     "You are a college mathematics lesson author. Output ONLY a JSON object — "
     "no markdown fences, no commentary. Keys: 'title' (string), 'objectives' "

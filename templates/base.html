@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}MathPilot{% endblock %} · Think Deeper. Solve Better.</title>
-<link rel="stylesheet" href="/static/styles.css">
+<title>{% block title %}MathPilot{% endblock %} · AI Math Teaching & Learning</title>
+<link rel="stylesheet" href="/static/styles.css?v=5">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mathlive@4.15.0/dist/mathlive.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -13,35 +13,199 @@
 <script defer src="https://cdn.jsdelivr.net/npm/mathlive@4.15.0/dist/mathlive.min.js"></script>
 </head>
 <body>
-<div class="shell">
-  <aside class="sidebar">
-    <div class="brand"><span class="logo">🚀</span><span><b>MathPilot</b><small>Think Deeper. Solve Better.</small></span></div>
-    <nav class="nav">
-      <a href="/" class="{% if nav=='home' %}active{% endif %}">🏠 Home</a>
-      <a href="/courses" class="{% if nav=='courses' %}active{% endif %}">📚 My Courses</a>
-      <a href="/assignments" class="{% if nav=='practice' %}active{% endif %}">📝 Practice</a>
-      <a href="/progress" class="{% if nav=='progress' %}active{% endif %}">📈 Progress</a>
-      <a href="/materials" class="{% if nav=='materials' %}active{% endif %}">📖 Course Materials</a>
-      <a href="/instructor" class="{% if nav=='instructor' or nav=='instructor-dashboard' %}active{% endif %}">👩‍🏫 Instructor</a>
-      <a href="/instructor/dashboard" class="sub {% if nav=='instructor-dashboard' %}active{% endif %}">↳ Dashboard</a>
-      <a href="/settings" class="{% if nav=='settings' %}active{% endif %}">⚙️ Settings</a>
-    </nav>
-    <div class="side-user"><span style="font-size:26px">🧑‍🎓</span><span><b>Alex Johnson</b><br><small style="color:#bcd0f5">Student</small></span></div>
-  </aside>
-  <main class="main">
-    <div class="topbar">
-      <div class="role-switch">
-        <a href="/" class="{% if nav!='instructor' and nav!='instructor-dashboard' %}on{% endif %}">Student view</a>
-        <a href="/instructor" class="{% if nav=='instructor' %}on{% endif %}">Instructor view</a>
-        <a href="/instructor/dashboard" class="{% if nav=='instructor-dashboard' %}on{% endif %}">Instructor dashboard</a>
+
+<!-- Global Top Header -->
+<header class="top-header">
+  <div class="header-left">
+    <a href="/practice" class="brand-link">
+      <div class="brand-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9 12 2"></polygon>
+        </svg>
       </div>
-      {% if demo is defined and demo %}
-      <span class="pill">⚠️ Demo mode — add <code>NEBIUS_API_KEY</code> for live AI tutoring</span>
-      {% endif %}
+      <span class="brand-text">MathPilot</span>
+    </a>
+
+    <!-- Active Course Selector -->
+    <div class="course-picker" onclick="window.location.href='/courses'" title="Switch Course">
+      <div class="course-picker-title">
+        <span>{{ current_course if current_course is defined else 'Calculus I' }}</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+      <div class="course-picker-sub">Northbridge University</div>
     </div>
-    {% block content %}{% endblock %}
-    <footer>MathPilot MVP · Socratic tutoring + SymPy verification · Synthetic demo data only.</footer>
-  </main>
+  </div>
+
+  <!-- Center Top Nav & Role Switcher -->
+  <div style="display:flex; align-items:center; gap:20px;">
+    <!-- Prominent Role Switcher -->
+    <div class="role-pill-switcher" aria-label="Role Switcher">
+      <a href="/practice" class="role-pill {% if nav != 'instructor' and nav != 'instructor-dashboard' %}active{% endif %}">
+        <span>🎓 Student View</span>
+      </a>
+      <a href="/instructor/dashboard" class="role-pill {% if nav == 'instructor' or nav == 'instructor-dashboard' %}active{% endif %}">
+        <span>👩‍🏫 Instructor View</span>
+      </a>
+    </div>
+
+    <!-- Contextual Center Navigation -->
+    <nav class="header-center" aria-label="Main Navigation">
+      {% if nav == 'instructor' or nav == 'instructor-dashboard' %}
+        <a href="/instructor/dashboard" class="top-nav-item {% if nav=='instructor-dashboard' %}active{% endif %}">Builder & Lessons</a>
+        <a href="/instructor" class="top-nav-item {% if nav=='instructor' %}active{% endif %}">Student Analytics</a>
+        <a href="/assignments" class="top-nav-item {% if nav=='assignments' %}active{% endif %}">Assignments</a>
+        <a href="/materials" class="top-nav-item {% if nav=='materials' %}active{% endif %}">Materials</a>
+        <a href="/settings" class="top-nav-item {% if nav=='settings' %}active{% endif %}">Settings</a>
+      {% else %}
+        <a href="/practice" class="top-nav-item {% if active_nav=='dashboard' or nav=='home' or not nav %}active{% endif %}">Dashboard</a>
+        <a href="/courses" class="top-nav-item {% if active_nav=='courses' or nav=='courses' %}active{% endif %}">My Courses</a>
+        <a href="/lessons" class="top-nav-item {% if active_nav=='lessons' or nav=='lessons' %}active{% endif %}">Lessons</a>
+        <a href="/assignments" class="top-nav-item {% if active_nav=='assignments' or nav=='practice' %}active{% endif %}">Assignments</a>
+        <a href="/tutor" class="top-nav-item {% if active_nav=='tutor' or nav=='tutor' %}active{% endif %}">Tutor</a>
+        <a href="/progress" class="top-nav-item {% if active_nav=='progress' or nav=='progress' %}active{% endif %}">Progress</a>
+      {% endif %}
+    </nav>
+  </div>
+
+  <!-- Right Section: Notifications & User Profile -->
+  <div class="header-right">
+    <button class="notif-btn" aria-label="Notifications" title="1 unread notification">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+      </svg>
+      <span class="notif-dot"></span>
+    </button>
+
+    {% if nav == 'instructor' or nav == 'instructor-dashboard' %}
+    <div class="user-profile" title="Signed in as Dr. Lee (Instructor)">
+      <div class="user-avatar" style="background:#0f766e;">DL</div>
+      <span class="user-name">
+        Dr. Lee
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+      </span>
+    </div>
+    {% else %}
+    <div class="user-profile" title="Signed in as Maya (Student)">
+      <div class="user-avatar">MY</div>
+      <span class="user-name">
+        Maya
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+      </span>
+    </div>
+    {% endif %}
+  </div>
+</header>
+
+<div class="shell">
+  <!-- Left Navigation Sidebar -->
+  <aside class="sidebar" aria-label="Sidebar Navigation">
+    {% if nav == 'instructor' or nav == 'instructor-dashboard' %}
+    <!-- Instructor Sidebar Navigation -->
+    <div style="font-size:11px; font-weight:700; color:var(--muted); letter-spacing:0.5px; margin-bottom:10px; padding-left:14px;">
+      INSTRUCTOR WORKSPACE
+    </div>
+    <nav class="side-nav">
+      <a href="/instructor/dashboard" class="side-nav-item {% if nav=='instructor-dashboard' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
+        <span>Dashboard & Builder</span>
+      </a>
+
+      <a href="/instructor" class="side-nav-item {% if nav=='instructor' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+        <span>Student Analytics</span>
+      </a>
+
+      <a href="/assignments" class="side-nav-item {% if active_nav=='assignments' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+        <span>Assignments</span>
+      </a>
+
+      <a href="/materials" class="side-nav-item {% if active_nav=='materials' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+        <span>Course Notes</span>
+      </a>
+
+      <a href="/settings" class="side-nav-item {% if active_nav=='settings' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        <span>AI Model Settings</span>
+      </a>
+    </nav>
+
+    <!-- Switch to Student View Banner -->
+    <a href="/practice" class="help-side-card" style="background:#f0fdf4; border-color:#bbf7d0; margin-top:auto; margin-bottom:10px;">
+      <div class="help-icon" style="background:var(--green);">🎓</div>
+      <div class="help-text">
+        <strong style="color:var(--green-text);">Student Preview</strong>
+        <span style="color:var(--green-text);">Open Student Learning Workspace &rarr;</span>
+      </div>
+    </a>
+    {% else %}
+    <!-- Student Sidebar Navigation -->
+    <nav class="side-nav">
+      <a href="/practice" class="side-nav-item {% if active_nav=='dashboard' or nav=='home' or not nav %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+        <span>Dashboard</span>
+      </a>
+
+      <a href="/courses" class="side-nav-item {% if active_nav=='courses' or nav=='courses' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+        <span>My Courses</span>
+      </a>
+
+      <a href="/lessons" class="side-nav-item {% if active_nav=='lessons' or nav=='lessons' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+        <span>Lessons</span>
+      </a>
+
+      <a href="/assignments" class="side-nav-item {% if active_nav=='assignments' or nav=='practice' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+        <span>Assignments</span>
+      </a>
+
+      <a href="/tutor" class="side-nav-item {% if active_nav=='tutor' or nav=='tutor' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
+        <span>AI Tutor</span>
+      </a>
+
+      <a href="/progress" class="side-nav-item {% if active_nav=='progress' or nav=='progress' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+        <span>My Progress</span>
+      </a>
+
+      <a href="/study-guides" class="side-nav-item {% if active_nav=='study-guides' or nav=='study-guides' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
+        <span>Study Guides</span>
+      </a>
+    </nav>
+
+    <!-- Switch to Instructor Mode Quick Card -->
+    <a href="/instructor/dashboard" class="help-side-card" style="background:var(--purple-soft); border-color:var(--purple-border); margin-top:auto; margin-bottom:10px;">
+      <div class="help-icon" style="background:var(--purple-primary);">👩‍🏫</div>
+      <div class="help-text">
+        <strong style="color:var(--purple-primary);">Instructor Mode</strong>
+        <span>Dashboard & Lesson Builder &rarr;</span>
+      </div>
+    </a>
+    {% endif %}
+
+    <!-- Bottom Help Card -->
+    <a href="/help" class="help-side-card" style="padding:10px 12px;">
+      <div class="help-icon" style="width:22px; height:22px; font-size:12px; background:#94a3b8;">?</div>
+      <div class="help-text" style="font-size:11px;">
+        <span>Help & Accessibility &rarr;</span>
+      </div>
+    </a>
+  </aside>
+
+  <!-- Main Content Wrapper -->
+  <div class="main-wrapper">
+    <main class="main-content">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
 </div>
+
 </body>
 </html>

@@ -1,95 +1,609 @@
-{% extends "base.html" %}{% set active_nav='practice' %}
+{% extends "base.html" %}{% set active_nav='dashboard' %}
 {% block title %}{{ activity.title }}{% endblock %}
+
 {% block content %}
-<h1>{{ activity.title }}</h1>
-<p class="muted">{{ activity.course_topic }} · Step-by-step Socratic tutoring · SymPy-checked</p>
-{% if demo %}<div class="alert"><b>Demo mode:</b> feedback is rule-based and labeled. Add <code>NEBIUS_API_KEY</code> + restart for live Qwen → Nemotron tutoring.</div>{% endif %}
-<div class="grid g2">
-  <div class="card">
-    <h3>🎯 Current Problem</h3>
-    <div class="problem">{{ activity.problem_statement }}</div>
-    <label for="step">Working step</label>
-    <select id="step">
-      {% for s in steps %}<option value="{{ loop.index0 }}">Step {{ loop.index }}: {{ s.prompt }}</option>{% endfor %}
-    </select>
-    <p id="stepPrompt" class="muted"></p>
-    <label id="mf-label" for="mf">Math input — type or use the visual editor (toolbar: fractions, π, √, powers)</label>
-    <div class="row" style="margin-bottom:6px">
-      <button type="button" class="btn small ghost" id="modeBtn" onclick="toggleMode()">⌨️ Plain-text mode</button>
-      <span class="muted"><small id="modeHint">Visual math editor active — output sent as LaTeX.</small></span>
+<!-- Breadcrumb & Page Title -->
+<div class="breadcrumb">
+  <a href="/courses">Calculus I</a> &nbsp;/&nbsp; <span>Chain rule</span>
+</div>
+
+<h1 class="page-title">{{ activity.title }}</h1>
+<p class="page-subtitle">Build your reasoning, one step at a time.</p>
+
+<div class="workspace-grid">
+  <!-- Left Main Practice Column -->
+  <div class="workspace-main">
+
+    <!-- QUESTION CARD -->
+    <div class="question-card">
+      <div class="question-top-row">
+        <span class="question-number">QUESTION {{ question_index }} of {{ total_questions }}</span>
+        <span class="approval-badge">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+          Approved by Dr. Lee
+        </span>
+      </div>
+
+      <div class="question-prompt">Differentiate the function.</div>
+
+      <div class="problem-math-hero" id="problemDisplay">
+        $$f(x) = (3x + 1)^2$$
+      </div>
+
+      <!-- Stepper -->
+      <div class="stepper-container">
+        <div class="stepper-line">
+          <div class="stepper-line-fill" id="stepperFill" style="width: 50%;"></div>
+        </div>
+        <div class="stepper-track">
+          {% for s in steps %}
+          <div class="stepper-node" id="stepNode-{{ loop.index0 }}">
+            <div class="stepper-circle {% if loop.index0 < active_step %}completed{% elif loop.index0 == active_step %}active{% else %}upcoming{% endif %}" id="circle-{{ loop.index0 }}">
+              {% if loop.index0 < active_step %}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              {% else %}
+                {{ loop.index }}
+              {% endif %}
+            </div>
+            <div class="stepper-label">{{ s.prompt }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
     </div>
-    <math-field id="mf" aria-labelledby="mf-label" role="textbox" aria-multiline="false">\frac{1}{3}\pi r^2 h</math-field>
-    <textarea id="answer" rows="3" style="display:none" placeholder="e.g. (2/3)*pi*r^3  — supports +, -, *, /, ^, pi, dr/dt, LaTeX \frac{}{}, Unicode π ² ⅓"></textarea>
-    <p class="muted"><small>Accepted formats: plain ASCII (<code>(1/3)*pi*r^2*h</code>), LaTeX (<code>\frac{1}{3}\pi r^2 h</code>), or Unicode (<code>⅓πr²h</code>) — all verified equivalent by SymPy.</small></p>
-    <div class="row" style="margin-top:10px">
-      <button class="btn" id="submitBtn" onclick="submitStep()">Submit</button>
-      <button class="btn ghost" onclick="getHint()">💡 Get a Hint</button>
-      <button class="btn ghost" onclick="checkWork()">✔ Check My Work</button>
-      <button class="btn ghost" onclick="showSteps()">📖 Show Steps</button>
+
+    <!-- Tabs: Your work, Solution, Examples -->
+    <div class="tab-pills">
+      <button class="tab-pill active" id="tabWorkBtn" onclick="switchTab('work')">Your work</button>
+      <button class="tab-pill" id="tabSolBtn" onclick="switchTab('solution')">Solution</button>
+      <button class="tab-pill" id="tabExBtn" onclick="switchTab('examples')">Examples</button>
     </div>
-    <div id="status"></div>
-    <p class="muted"><small>Accepted methods: {{ activity.accepted_methods }}<br>Common misconception to avoid: {{ activity.misconceptions }}</small></p>
+
+    <!-- TAB 1: YOUR WORK CARD -->
+    <div class="working-card" id="tabWorkView">
+      <div class="working-card-title">Your working</div>
+
+      <!-- Chronological Submitted Steps List -->
+      <div id="stepsList">
+        <div class="step-item" id="item-step-0">
+          <div class="step-item-head">
+            <div class="step-item-left">
+              <div class="step-num-bubble done">1</div>
+              <div class="step-math-display">$$u = 3x + 1$$</div>
+            </div>
+            <span class="status-pill verified">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              Verified step
+            </span>
+          </div>
+        </div>
+
+        <div class="step-item" id="item-step-1">
+          <div class="step-item-head">
+            <div class="step-item-left">
+              <div class="step-num-bubble">2</div>
+              <div class="step-math-display">$$f'(x) = 2(3x + 1)$$</div>
+            </div>
+            <span class="status-pill needs-correction">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+              Needs correction
+            </span>
+          </div>
+          <div class="nested-hint-box" id="hint-box-step-1">
+            <div class="hint-icon">💡</div>
+            <div class="hint-body">
+              <strong>Hint</strong>
+              You're missing part of the chain rule. Remember to multiply by the derivative of the inner function. What is the derivative of $3x + 1$?
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ACTIVE WORKING STEP INPUT EDITOR -->
+      <div class="step-item active-step" id="activeEditorItem">
+        <div class="input-row-group">
+          <div class="step-num-bubble" id="activeStepBubble">3</div>
+          <div class="math-prefix" id="activeStepPrefix">f'(x) =</div>
+          <math-field id="mf" placeholder="Enter your expression"></math-field>
+        </div>
+
+        <!-- Quick Math Toolbar -->
+        <div class="math-quick-bar">
+          <button type="button" class="symbol-btn" onclick="insertPower2()" title="Square">x²</button>
+          <button type="button" class="symbol-btn" onclick="insertFrac()" title="Fraction">a/b</button>
+          <button type="button" class="symbol-btn" onclick="insertSqrt()" title="Square Root">√</button>
+          <button type="button" class="symbol-btn" onclick="insertParens()" title="Parentheses">( )</button>
+          <button type="button" class="symbol-btn" onclick="toggleKeyboardPalette()" title="Toggle Math Keyboard">⌨</button>
+        </div>
+
+        <!-- Action Row -->
+        <div class="action-row">
+          <button type="button" class="link-btn" onclick="askForAHint()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            Ask for a hint
+          </button>
+          <button type="button" class="btn-primary" id="checkStepBtn" onclick="submitCurrentStep()">Check step</button>
+        </div>
+
+        <div id="inlineFeedback" style="margin-top:10px;"></div>
+      </div>
+
+      <!-- Next Step / Completion Banner -->
+      <div class="next-banner" id="nextBanner">
+        <div class="next-banner-left">
+          <div class="lock-icon-box" id="lockIconBox">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+          </div>
+          <div class="next-banner-text">
+            <strong id="nextBannerTitle">Next: Simplify the expression</strong>
+            <span id="nextBannerSub">Complete the derivative and write your final answer.</span>
+          </div>
+        </div>
+        <button type="button" class="btn-continue" id="continueBtn" onclick="advanceToNextStep()">Continue &rarr;</button>
+      </div>
+
+    </div>
+
+    <!-- TAB 2: SOLUTION VIEW -->
+    <div class="working-card" id="tabSolView" style="display:none;">
+      <div class="working-card-title">Complete Verified Solution</div>
+      <p class="muted">Instructor-approved solution for $f(x) = (3x + 1)^2$:</p>
+      <div style="background:var(--purple-soft); padding:18px; border-radius:12px; border:1px solid var(--purple-border); line-height:1.8;">
+        <p><strong>Step 1: Identify the inner function.</strong><br>Let $u = 3x + 1$. The outer function is $f(u) = u^2$.</p>
+        <p><strong>Step 2: Apply the chain rule.</strong><br>$$\frac{d}{dx}[f(g(x))] = f'(g(x)) \cdot g'(x)$$<br>$$f'(x) = 2(3x + 1) \cdot \frac{d}{dx}[3x + 1] = 2(3x + 1)(3)$$</p>
+        <p><strong>Step 3: Simplify constants.</strong><br>$$f'(x) = 6(3x + 1) = 18x + 6$$</p>
+      </div>
+    </div>
+
+    <!-- TAB 3: EXAMPLES VIEW -->
+    <div class="working-card" id="tabExView" style="display:none;">
+      <div class="working-card-title">Analogous Worked Examples</div>
+      <p class="muted">Similar composite functions differentiated using the power chain rule:</p>
+      <div style="background:#f8fafc; padding:18px; border-radius:12px; border:1px solid #e2e8f0; line-height:1.8;">
+        <h4>Example: Differentiate $g(x) = (2x + 5)^3$</h4>
+        <ol style="margin-left: 20px;">
+          <li>Identify inner expression: $u = 2x + 5$.</li>
+          <li>Outer power rule & chain factor: $g'(x) = 3(2x + 5)^2 \cdot \frac{d}{dx}[2x + 5] = 3(2x + 5)^2 \cdot 2$.</li>
+          <li>Multiply coefficients: $g'(x) = 6(2x + 5)^2$.</li>
+        </ol>
+      </div>
+    </div>
+
   </div>
-  <div class="card">
-    <h3>🤖 Tutor conversation</h3>
-    <div class="chat" id="chat"><div class="msg"><div class="who">MathPilot</div>I'll guide you — submit one step at a time and I'll give feedback, not the answer.</div></div>
-    <div id="hintBox"></div>
-    <div id="stepsBox" style="display:none" class="muted"><ol>{% for s in steps %}<li>{{ s.prompt }} <br><small>Expected form: <code>{{ s.expected }}</code></small></li>{% endfor %}</ol>
-    <p><small>Steps shown per activity policy (reveal {{ 'allowed' if activity.allow_solution_reveal else 'limited' }}).</small></p></div>
+
+  <!-- Right Support Column -->
+  <aside class="workspace-sidebar">
+
+    <!-- 1. AI Math Tutor Card -->
+    <div class="support-card">
+      <div class="support-card-head">
+        <div class="support-card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple-primary)" stroke-width="2.5"><polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9 12 2"></polygon></svg>
+          AI Math Tutor
+        </div>
+        <div class="support-card-pills">
+          <span class="pill-badge">A hint, not the answer</span>
+          <span class="pill-badge" id="hintsLeftBadge">💡 Hints left: 2</span>
+        </div>
+      </div>
+
+      <div class="tutor-chat-box">
+        <div class="tutor-msg-bubble" id="tutorMessageBubble">
+          <div class="tutor-avatar">🤖</div>
+          <div id="tutorMessageText">
+            Great start! You correctly identified the inner function. Now, remember the chain rule:
+            <br><br>
+            If $f(x) = (g(x))^2$, then $f'(x) = 2g(x) \cdot g'(x)$.
+            <br><br>
+            What is $g'(x)$ when $g(x) = 3x + 1$?
+          </div>
+        </div>
+      </div>
+
+      <div class="tutor-actions">
+        <button type="button" class="btn-tutor-action" onclick="showMeAHint()">Show me a hint</button>
+        <button type="button" class="btn-tutor-action" onclick="showMeAnExample()">Show me an example</button>
+        <button type="button" class="btn-tutor-action" onclick="imStuck()">I'm stuck</button>
+      </div>
+    </div>
+
+    <!-- 2. Course Notes Card -->
+    <div class="support-card">
+      <div class="support-card-head" onclick="toggleCardBody('notesBody')">
+        <div class="support-card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple-primary)" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+          Course notes
+        </div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+
+      <div id="notesBody" style="margin-top:12px;">
+        <div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:4px;">Chain rule · Dr. Lee</div>
+        <p style="font-size:13px; color:var(--navy); line-height:1.5; margin:0 0 12px;">
+          The chain rule is used to differentiate composite functions. If $f(x) = g(h(x))$, then $f'(x) = g'(h(x)) \cdot h'(x)$ ...
+        </p>
+        <button type="button" class="btn small ghost" style="width:100%; border-radius:8px;" onclick="openNotesModal()">View notes ↗</button>
+      </div>
+    </div>
+
+    <!-- 3. Instructor Review Card -->
+    <div class="support-card">
+      <div class="support-card-head" onclick="toggleCardBody('reviewBody')">
+        <div class="support-card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple-primary)" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+          Instructor review
+        </div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+
+      <div id="reviewBody" style="margin-top:12px;">
+        <p style="font-size:13px; color:var(--navy); line-height:1.5; margin:0 0 12px;" id="reviewStatusText">
+          Your work will be reviewed by your instructor. Keep going!
+        </p>
+        <button type="button" class="btn small ghost" style="width:100%; border-radius:8px;" id="requestReviewBtn" onclick="requestInstructorReview()">Request review</button>
+      </div>
+    </div>
+
+    <!-- 4. Math Keyboard Card -->
+    <div class="support-card">
+      <div class="support-card-head" onclick="toggleKeyboardPalette()">
+        <div class="support-card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple-primary)" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="M6 8h.001M10 8h.001M14 8h.001M18 8h.001M6 12h.001M10 12h.001M14 12h.001M18 12h.001M7 16h10"></path></svg>
+          Math keyboard
+        </div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+
+      <div id="keyboardBody" style="margin-top:12px;">
+        <p style="font-size:13px; color:var(--muted); line-height:1.5; margin:0 0 10px;">
+          Use the math keyboard for fractions, exponents, roots and more.
+        </p>
+        <button type="button" class="btn small ghost" style="width:100%; border-radius:8px; display:flex; align-items:center; justify-content:center; gap:6px;" onclick="toggleKeyboardPalette()">
+          <span>⌨</span> Open keyboard
+        </button>
+
+        <!-- Collapsible Keypad Palette -->
+        <div class="math-keyboard-palette" id="mathPalette" style="display:none;">
+          <button type="button" class="palette-key" onclick="insertFrac()">a/b</button>
+          <button type="button" class="palette-key" onclick="insertPower2()">x²</button>
+          <button type="button" class="palette-key" onclick="insertPowerN()">xⁿ</button>
+          <button type="button" class="palette-key" onclick="insertSqrt()">√x</button>
+          <button type="button" class="palette-key" onclick="insertMath('\\pi')">π</button>
+          <button type="button" class="palette-key" onclick="insertMath('f\'(x)')">f'(x)</button>
+          <button type="button" class="palette-key" onclick="insertMath('\\frac{d}{dx}')">d/dx</button>
+          <button type="button" class="palette-key" onclick="insertMath('u')">u</button>
+          <button type="button" class="palette-key" onclick="insertMath('x')">x</button>
+          <button type="button" class="palette-key" onclick="insertMath('(')">(</button>
+          <button type="button" class="palette-key" onclick="insertMath(')')">)</button>
+          <button type="button" class="palette-key" onclick="insertMath('+')">+</button>
+          <button type="button" class="palette-key" onclick="insertMath('-')">−</button>
+          <button type="button" class="palette-key" onclick="insertMath('\\cdot')">·</button>
+          <button type="button" class="palette-key" onclick="insertMath('=')">=</button>
+        </div>
+      </div>
+    </div>
+
+  </aside>
+</div>
+
+<!-- Modal for Course Notes -->
+<div class="modal-overlay" id="notesModal" onclick="if(event.target===this) closeNotesModal()">
+  <div class="modal-box">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+      <h3 style="margin:0; font-size:18px;">📖 Chain Rule — Lecture Notes</h3>
+      <button type="button" onclick="closeNotesModal()" style="background:none; border:none; font-size:22px; cursor:pointer;">&times;</button>
+    </div>
+    <div style="font-size:14px; line-height:1.7; color:var(--navy);">
+      <p><strong>Instructor:</strong> Dr. Lee · Department of Mathematics</p>
+      <p><strong>Section 2.5: The Chain Rule</strong></p>
+      <p>The Chain Rule states that for a composite function $F(x) = f(g(x))$:</p>
+      <p style="background:var(--purple-soft); padding:12px; border-radius:8px; border:1px solid var(--purple-border); text-align:center;">
+        $$F'(x) = f'(g(x)) \cdot g'(x)$$
+      </p>
+      <p><strong>Power Chain Rule Special Case:</strong></p>
+      <p>If $F(x) = (g(x))^n$, then:</p>
+      <p style="background:var(--purple-soft); padding:12px; border-radius:8px; border:1px solid var(--purple-border); text-align:center;">
+        $$F'(x) = n(g(x))^{n-1} \cdot g'(x)$$
+      </p>
+      <p><strong>Tip:</strong> Always identify the inner expression $u = g(x)$ first. Differentiate the outer function, keeping the inside unchanged, and then multiply by the derivative of the inside.</p>
+    </div>
+    <div style="text-align:right; margin-top:18px;">
+      <button type="button" class="btn small" onclick="closeNotesModal()">Got it</button>
+    </div>
   </div>
 </div>
-<div class="card" style="margin-top:16px"><h3>Recent attempts (this activity)</h3>
-<table><tr><th>When</th><th>Step</th><th>Response</th><th>Verdict</th></tr>
-{% for t in attempts %}<tr><td>{{ t.created_at }}</td><td>{{ t.step_index+1 }}</td><td><code>{{ t.student_response }}</code></td><td><span class="badge {{ t.verdict }}">{{ t.verdict }}</span></td></tr>{% else %}<tr><td colspan="4" class="muted">No attempts yet — submit your first step above.</td></tr>{% endfor %}</table></div>
+
 <script>
+const ACTIVITY_ID = {{ activity.id }};
 const STEPS = {{ steps|tojson }};
-const ACT = {{ activity.id }};
-let hintLevel = 0;
-function stepIdx(){ return parseInt(document.getElementById('step').value||'0'); }
-document.getElementById('step').addEventListener('change', e=>{ document.getElementById('stepPrompt').textContent = STEPS[stepIdx()].prompt; });
-document.getElementById('stepPrompt').textContent = STEPS.length ? STEPS[0].prompt : '';
-function bubble(who, html, me){ const c=document.getElementById('chat'); const d=document.createElement('div'); d.className='msg'+(me?' me':''); d.innerHTML='<div class="who">'+who+'</div>'+html; c.appendChild(d); c.scrollTop=c.scrollHeight; if(window.renderMath) window.renderMath(d); }
-let visualMode = true;
-function currentAnswer(){
-  if(visualMode){
-    const mf = document.getElementById('mf');
-    try { return mf.getValue('latex') || mf.value || ''; } catch(e){ return mf.value || ''; }
+let activeStep = 1; // Default active step is Step 2 (0-indexed: index 1) matching reference screenshot
+let hintsRemaining = 2;
+let hintLevel = 1;
+
+// Math Rendering
+function triggerMathRender() {
+  if (window.renderMathInElement) {
+    window.renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ],
+      throwOnError: false
+    });
   }
-  return document.getElementById('answer').value;
 }
-function toggleMode(){
-  visualMode = !visualMode;
-  document.getElementById('mf').style.display = visualMode ? 'block' : 'none';
-  document.getElementById('answer').style.display = visualMode ? 'none' : 'block';
-  document.getElementById('modeBtn').textContent = visualMode ? '⌨️ Plain-text mode' : '🧮 Visual editor mode';
-  document.getElementById('modeHint').textContent = visualMode ? 'Visual math editor active — output sent as LaTeX.' : 'Plain text active — ASCII, LaTeX, or Unicode all accepted.';
+window.addEventListener('load', triggerMathRender);
+
+// Math helper functions
+function insertFrac() { insertMath('\\frac{}{}'); }
+function insertPower2() { insertMath('^2'); }
+function insertPowerN() { insertMath('^{}'); }
+function insertSqrt() { insertMath('\\sqrt{}'); }
+function insertParens() { insertMath('()'); }
+
+// Insert math into MathLive
+function insertMath(latex) {
+  const mf = document.getElementById('mf');
+  if (mf) {
+    mf.executeCommand(['insert', latex]);
+    mf.focus();
+  }
 }
-async function submitStep(){ const btn=document.getElementById('submitBtn'); btn.disabled=true;
-  const resp=currentAnswer();
-  const warn=precheck(resp);
-  if(warn){ document.getElementById('status').innerHTML='<div class="alert">'+warn+'</div>'; btn.disabled=false; return; }
-  bubble('You', resp.replace(/</g,'&lt;'), true);
-  document.getElementById('status').innerHTML='<p class="muted">Checking with SymPy + tutor…</p>';
-  try{ const r=await fetch('/api/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({activity_id:ACT,step_index:stepIdx(),response:resp,hint_level:hintLevel})});
-    const j=await r.json();
-    if(!r.ok) throw new Error(j.detail||'request failed');
-    bubble('MathPilot ('+j.verdict+')', j.reply.replace(/</g,'&lt;'));
-    document.getElementById('status').innerHTML = j.verdict==='correct' ? '<div class="ok">✔ Verified step. Move to the next step above.</div>' : '<div class="alert">Verdict: <b>'+j.verdict+'</b> — '+(j.detail||'')+'</div>';
-  }catch(e){ document.getElementById('status').innerHTML='<div class="alert">Request failed: '+e.message+'. Your input is preserved — try again.</div>'; }
-  btn.disabled=false;
+
+// Toggle Virtual Math Palette
+function toggleKeyboardPalette() {
+  const palette = document.getElementById('mathPalette');
+  if (palette) {
+    palette.style.display = (palette.style.display === 'none' || palette.style.display === '') ? 'grid' : 'none';
+  }
 }
-async function getHint(){ hintLevel=Math.min(4,hintLevel+1);
-  const r=await fetch('/api/hint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({activity_id:ACT,step_index:stepIdx(),level:hintLevel})});
-  const j=await r.json(); document.getElementById('hintBox').innerHTML='<div class="ok">💡 Hint level '+j.level+': '+String(j.hint).replace(/</g,'&lt;')+'</div>';
-  if(window.renderMath) window.renderMath(document.getElementById('hintBox'));
-  bubble('MathPilot','Hint level '+j.level+': '+String(j.hint).replace(/</g,'&lt;'));
+
+function toggleCardBody(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+  }
 }
-async function checkWork(){ await submitStep(); }
-function showSteps(){ const b=document.getElementById('stepsBox'); b.style.display = b.style.display==='none'?'block':'none'; }
-function precheck(resp){
-  if(!resp.trim()) return "Empty — type your step first.";
-  if(/\\text\{[^}]*[a-z]{4,}/i.test(resp)) return "Looks like English prose inside \\text{} — submit math only.";
-  return null;
+
+function openNotesModal() {
+  document.getElementById('notesModal').classList.add('open');
+  triggerMathRender();
+}
+function closeNotesModal() {
+  document.getElementById('notesModal').classList.remove('open');
+}
+
+// Tab Switching
+function switchTab(tab) {
+  document.getElementById('tabWorkBtn').classList.toggle('active', tab === 'work');
+  document.getElementById('tabSolBtn').classList.toggle('active', tab === 'solution');
+  document.getElementById('tabExBtn').classList.toggle('active', tab === 'examples');
+
+  document.getElementById('tabWorkView').style.display = (tab === 'work') ? 'block' : 'none';
+  document.getElementById('tabSolView').style.display = (tab === 'solution') ? 'block' : 'none';
+  document.getElementById('tabExView').style.display = (tab === 'examples') ? 'block' : 'none';
+  triggerMathRender();
+}
+
+// Ask for a Hint
+async function askForAHint() {
+  await showMeAHint();
+}
+
+// Show Me a Hint
+async function showMeAHint() {
+  if (hintsRemaining > 0) {
+    hintsRemaining--;
+    document.getElementById('hintsLeftBadge').textContent = '💡 Hints left: ' + hintsRemaining;
+  }
+  hintLevel++;
+  try {
+    const res = await fetch('/api/hint', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({activity_id: ACTIVITY_ID, step_index: activeStep, level: hintLevel})
+    });
+    const data = await res.json();
+    const hintText = data.hint || "Remember to multiply by the derivative of the inner function 3x + 1.";
+    document.getElementById('tutorMessageText').innerHTML = '<strong>Hint (Level ' + data.level + '):</strong> ' + hintText;
+    triggerMathRender();
+  } catch (err) {
+    document.getElementById('tutorMessageText').innerHTML = "Remember: The chain rule requires multiplying by the derivative of the inner function $3x + 1$.";
+    triggerMathRender();
+  }
+}
+
+// Show Me an Example
+async function showMeAnExample() {
+  try {
+    const res = await fetch('/api/tutor/example', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({step_index: activeStep})
+    });
+    const ex = await res.json();
+    document.getElementById('tutorMessageText').innerHTML =
+      '<strong>' + ex.title + '</strong><br>' + ex.problem + '<br><br>' +
+      ex.solution.replace(/\n/g, '<br>') + '<br><br><em>Rule: ' + ex.rule + '</em>';
+    triggerMathRender();
+  } catch (err) {
+    document.getElementById('tutorMessageText').innerHTML = "Consider $g(x) = (2x+5)^3$. By chain rule, $g'(x) = 3(2x+5)^2 \\cdot 2 = 6(2x+5)^2$.";
+    triggerMathRender();
+  }
+}
+
+// I'm Stuck
+async function imStuck() {
+  try {
+    const res = await fetch('/api/tutor/stuck', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({step_index: activeStep})
+    });
+    const data = await res.json();
+    document.getElementById('tutorMessageText').innerHTML = data.reply.replace(/\n/g, '<br>');
+    triggerMathRender();
+  } catch (err) {
+    document.getElementById('tutorMessageText').innerHTML = "Let's break it down: Differentiate the outer square $2(3x+1)$, then multiply by the derivative of the inside $(3)$.";
+    triggerMathRender();
+  }
+}
+
+// Request Review
+async function requestInstructorReview() {
+  const btn = document.getElementById('requestReviewBtn');
+  btn.disabled = true;
+  btn.textContent = 'Submitting...';
+  try {
+    const res = await fetch('/api/review-request', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({activity_id: ACTIVITY_ID})
+    });
+    const data = await res.json();
+    document.getElementById('reviewStatusText').innerHTML = '<span style="color:var(--green); font-weight:600;">✔ ' + data.message + '</span>';
+    btn.textContent = 'Submitted for Dr. Lee';
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Retry Request';
+  }
+}
+
+// Submit Step
+async function submitCurrentStep() {
+  const mf = document.getElementById('mf');
+  const btn = document.getElementById('checkStepBtn');
+  let userMath = '';
+  try {
+    userMath = mf.getValue('latex') || mf.value || '';
+  } catch (e) {
+    userMath = mf.value || '';
+  }
+  userMath = userMath.trim();
+
+  if (!userMath) {
+    document.getElementById('inlineFeedback').innerHTML = '<span style="color:var(--amber); font-size:13px; font-weight:600;">Please enter your mathematical expression before checking.</span>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Checking...';
+  document.getElementById('inlineFeedback').innerHTML = '<span style="color:var(--muted); font-size:13px;">Checking algebraic equivalence with SymPy…</span>';
+
+  try {
+    const res = await fetch('/api/submit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        activity_id: ACTIVITY_ID,
+        step_index: activeStep,
+        response: userMath,
+        hint_level: hintLevel
+      })
+    });
+    const data = await res.json();
+
+    if (data.verdict === 'correct') {
+      document.getElementById('inlineFeedback').innerHTML = '';
+      
+      // Update Step Row in list
+      const stepItem = document.getElementById('item-step-' + activeStep);
+      if (stepItem) {
+        stepItem.innerHTML = `
+          <div class="step-item-head">
+            <div class="step-item-left">
+              <div class="step-num-bubble done">${activeStep + 1}</div>
+              <div class="step-math-display">$$${userMath.includes('=') ? userMath : "f'(x) = " + userMath}$$</div>
+            </div>
+            <span class="status-pill verified">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              Verified step
+            </span>
+          </div>
+        `;
+      }
+
+      // Update Stepper Circle
+      const c = document.getElementById('circle-' + activeStep);
+      if (c) {
+        c.className = 'stepper-circle completed';
+        c.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+      }
+
+      // Unlock Next Banner
+      document.getElementById('lockIconBox').innerHTML = '✔';
+      document.getElementById('lockIconBox').style.background = 'var(--green-bg)';
+      document.getElementById('lockIconBox').style.color = 'var(--green-text)';
+      document.getElementById('continueBtn').classList.add('unlocked');
+
+      // Update Tutor Message
+      document.getElementById('tutorMessageText').innerHTML =
+        '<strong>Excellent reasoning!</strong> Your step is mathematically verified.<br><br>' +
+        (data.reply || "Now proceed to simplify the expression into final form.");
+
+      // Advance step pointer
+      if (activeStep < STEPS.length - 1) {
+        activeStep++;
+        document.getElementById('activeStepBubble').textContent = activeStep + 1;
+        document.getElementById('activeStepPrefix').textContent = (activeStep === 2) ? "f'(x) =" : "Step " + (activeStep + 1) + ":";
+        mf.setValue('');
+        const nextCircle = document.getElementById('circle-' + activeStep);
+        if (nextCircle) nextCircle.className = 'stepper-circle active';
+        document.getElementById('stepperFill').style.width = '100%';
+        document.getElementById('nextBannerTitle').textContent = 'Final Step: ' + STEPS[activeStep].prompt;
+        document.getElementById('nextBannerSub').textContent = STEPS[activeStep].description || 'Simplify to complete the problem.';
+      } else {
+        document.getElementById('nextBannerTitle').textContent = 'Problem Completed! 🎉';
+        document.getElementById('nextBannerSub').textContent = 'All steps verified by SymPy.';
+        document.getElementById('activeEditorItem').style.display = 'none';
+      }
+
+    } else {
+      // Needs Correction
+      document.getElementById('inlineFeedback').innerHTML = '';
+      const stepItem = document.getElementById('item-step-' + activeStep);
+      const hintMsg = data.hint || "You're missing part of the chain rule. Remember to multiply by the derivative of the inner function. What is the derivative of 3x + 1?";
+
+      if (stepItem) {
+        stepItem.innerHTML = `
+          <div class="step-item-head">
+            <div class="step-item-left">
+              <div class="step-num-bubble">${activeStep + 1}</div>
+              <div class="step-math-display">$$${userMath.includes('=') ? userMath : "f'(x) = " + userMath}$$</div>
+            </div>
+            <span class="status-pill needs-correction">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+              Needs correction
+            </span>
+          </div>
+          <div class="nested-hint-box">
+            <div class="hint-icon">💡</div>
+            <div class="hint-body">
+              <strong>Hint</strong>
+              ${hintMsg}
+            </div>
+          </div>
+        `;
+      }
+
+      document.getElementById('tutorMessageText').innerHTML =
+        'Not quite yet. ' + (data.reply || hintMsg);
+    }
+  } catch (err) {
+    document.getElementById('inlineFeedback').innerHTML = '<span style="color:var(--red); font-size:13px;">Submission check failed: ' + err.message + '</span>';
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Check step';
+  triggerMathRender();
+}
+
+function advanceToNextStep() {
+  const btn = document.getElementById('continueBtn');
+  if (btn.classList.contains('unlocked')) {
+    document.getElementById('mf').focus();
+    btn.classList.remove('unlocked');
+  }
 }
 </script>
 {% endblock %}

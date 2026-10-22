@@ -1,13 +1,72 @@
-{% extends "base.html" %}{% set nav='progress' %}
-{% block title %}Progress{% endblock %}
+{% extends "base.html" %}{% set active_nav='progress' %}{% set nav='progress' %}
+{% block title %}My Progress{% endblock %}
 {% block content %}
-<h1>Track Your Progress</h1>
-<p class="muted">See your growth. Set goals. Achieve more.</p>
-<div class="grid g2">
-<div class="card"><h3>Overall Mastery</h3>{% for m in mastery %}<p>{{ m.topic }} — {{ m.score|round(0) }}%<div class="bar"><i style="width:{{ m.score }}%"></i></div></p>{% else %}<p class="muted">No mastery records yet.</p>{% endfor %}</div>
-<div class="card"><h3>Recent Achievements</h3><p>🏅 Completed practice steps <b class="muted">+50 XP</b></p><p>📈 Submitted {{ attempts|length }} steps total</p></div>
+<div class="page-header" style="margin-bottom:20px;">
+  <div class="breadcrumb">Calculus I / My Progress</div>
+  <h1 class="page-title">Track Your Progress</h1>
+  <p class="page-subtitle">Evidence-based mastery scores, recent attempts, and verified reasoning milestones.</p>
 </div>
-<div class="card" style="margin-top:16px"><h3>My Attempts</h3>
-<table><tr><th>When</th><th>Activity</th><th>Step</th><th>Response</th><th>Verdict</th></tr>
-{% for t in attempts %}<tr><td>{{ t.created_at }}</td><td>{{ t.activity_id }}</td><td>{{ t.step_index+1 }}</td><td><code>{{ t.student_response }}</code></td><td><span class="badge {{ t.verdict }}">{{ t.verdict }}</span></td></tr>{% else %}<tr><td colspan="5" class="muted">No attempts yet.</td></tr>{% endfor %}</table></div>
+
+<div class="grid g2">
+  <div class="card">
+    <h3 style="margin-top:0;">Calculus Concept Mastery</h3>
+    {% for m in mastery %}
+    <div style="margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; font-size:14px; font-weight:600; margin-bottom:4px;">
+        <span>{{ m.topic }}</span>
+        <span>{{ m.score|round(0) }}%</span>
+      </div>
+      <div class="bar"><i style="width:{{ m.score }}%; background:var(--purple-primary);"></i></div>
+    </div>
+    {% else %}
+    <p class="muted">No mastery records yet.</p>
+    {% endfor %}
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Recent Learning Milestones</h3>
+    <div style="display:flex; flex-direction:column; gap:12px; margin-top:14px;">
+      <div style="display:flex; gap:12px; align-items:center; padding:10px; background:var(--purple-soft); border-radius:10px;">
+        <span style="font-size:22px;">🏅</span>
+        <div>
+          <div style="font-weight:700; font-size:14px;">Verified Chain Rule Step</div>
+          <div class="muted" style="font-size:12px;">Successfully identified inner function $u = 3x + 1$</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:12px; align-items:center; padding:10px; background:#f8fafc; border-radius:10px; border:1px solid #e2e8f0;">
+        <span style="font-size:22px;">📈</span>
+        <div>
+          <div style="font-weight:700; font-size:14px;">Total Mathematical Steps Submitted</div>
+          <div class="muted" style="font-size:12px;">{{ attempts|length }} verified attempts evaluated with SymPy</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px;">
+  <h3 style="margin-top:0;">Recent Step Attempts (SymPy Checked)</h3>
+  <table class="table" style="margin-top:12px;">
+    <thead>
+      <tr><th>When</th><th>Activity</th><th>Step</th><th>Response</th><th>Verdict</th></tr>
+    </thead>
+    <tbody>
+      {% for t in attempts %}
+      <tr>
+        <td>{{ t.created_at.strftime('%b %d, %H:%M') if t.created_at else 'Recent' }}</td>
+        <td>{{ t.activity_id }}</td>
+        <td>Step {{ t.step_index + 1 }}</td>
+        <td><code>{{ t.student_response }}</code></td>
+        <td>
+          <span class="status-pill {% if t.verdict == 'correct' %}verified{% else %}needs-correction{% endif %}">
+            {{ t.verdict }}
+          </span>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No attempts recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endblock %}

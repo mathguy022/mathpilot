@@ -160,6 +160,32 @@ class Publication(Base):
     title = Column(String(300), default="")
     due_date = Column(String(30), default="")
     grading_policy = Column(String(50), default="Completion")
+    assigned_course = Column(String(200), default="")
+    created_at = Column(DateTime, default=utcnow)
+
+
+def ensure_schema():
+    """Lightweight additive migration for existing SQLite databases.
+
+    create_all covers fresh installs; ALTER TABLE covers databases created
+    before a column existed. Additive only — never drops or renames.
+    """
+    with engine.begin() as conn:
+        existing = {r[1] for r in conn.exec_driver_sql(
+            f"PRAGMA table_info({Publication.__tablename__})")}
+        if "assigned_course" not in existing:
+            conn.exec_driver_sql(
+                f"ALTER TABLE {Publication.__tablename__} "
+                "ADD COLUMN assigned_course VARCHAR(200) DEFAULT ''")
+
+
+class ReviewRequest(Base):
+    __tablename__ = "review_requests"
+    id = Column(Integer, primary_key=True)
+    activity_id = Column(Integer, ForeignKey("activities.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(String(30), default="pending")  # pending|reviewed|in_progress
+    notes = Column(Text, default="")
     created_at = Column(DateTime, default=utcnow)
 
 

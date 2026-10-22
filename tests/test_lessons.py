@@ -32,7 +32,7 @@ def test_dashboard_renders():
     assert "Generate Lesson" in r.text
     assert "Create Assignment" in r.text
     assert "Workspace Canvas" in r.text
-    assert "Review & Publish" in r.text
+    assert "Review, Publish & Assign" in r.text
 
 
 def test_success_and_inspector():

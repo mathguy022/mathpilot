@@ -1,0 +1,45 @@
+{% extends "base.html" %}{% set nav='help' %}
+{% block title %}Help & Accessibility{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="breadcrumb">Support / Help & Accessibility</div>
+  <h1>Help & Accessibility</h1>
+  <p class="subtitle">Keyboard shortcuts, mathematical input guidelines, and accessibility features in MathPilot.</p>
+</div>
+
+<div class="grid g2" style="margin-top:20px;">
+  <div class="card">
+    <h3>⌨️ Mathematical Keyboard Shortcuts</h3>
+    <p class="muted">You can use your physical keyboard or the on-screen math palette to type expressions:</p>
+    <table class="table" style="margin-top:12px;">
+      <thead>
+        <tr><th>Symbol / Action</th><th>Keyboard Shortcut</th><th>Example Input</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Fraction</td><td><code>/</code> or <code>\frac</code></td><td><code>1/3</code> &rarr; $\frac{1}{3}$</td></tr>
+        <tr><td>Power / Exponent</td><td><code>^</code></td><td><code>(3x+1)^2</code> &rarr; $(3x+1)^2$</td></tr>
+        <tr><td>Square Root</td><td><code>\sqrt</code></td><td><code>\sqrt{x}</code> &rarr; $\sqrt{x}$</td></tr>
+        <tr><td>Derivative notation</td><td><code>f'(x)</code> or <code>df/dx</code></td><td><code>f'(x)</code> &rarr; $f'(x)$</td></tr>
+        <tr><td>Greek letter $\pi$</td><td><code>pi</code> or <code>\pi</code></td><td><code>2*pi*r</code> &rarr; $2\pi r$</td></tr>
+        <tr><td>Subscript variable</td><td><code>_</code></td><td><code>u_1</code> &rarr; $u_1$</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>♿ Accessibility & Screen Readers</h3>
+    <p class="muted">MathPilot uses semantic HTML and standard ARIA attributes for seamless navigation with assistive tech:</p>
+    <ul style="line-height: 1.8; margin-top: 12px; color: var(--navy);">
+      <li><strong>ARIA Math Markup:</strong> All mathematical formulas are rendered with accessible KaTeX and MathLive spoken speech text.</li>
+      <li><strong>Tab Navigation:</strong> Move through problem steps, hints, buttons, and formula inputs using <kbd>Tab</kbd> and <kbd>Shift + Tab</kbd>.</li>
+      <li><strong>High Contrast & Fonts:</strong> Designed with accessible WCAG AA contrast standards, clear mathematical serif/sans-serif fonts, and visible keyboard-focus indicators.</li>
+      <li><strong>Keyboard Submission:</strong> Press <kbd>Enter</kbd> within the active math field to check your step immediately.</li>
+    </ul>
+
+    <div class="help-box" style="margin-top:20px; background:var(--purple-soft); border:1px solid var(--purple-border); border-radius:12px; padding:16px;">
+      <h4 style="margin:0 0 6px; color:var(--purple-primary);">Need Additional Accommodations?</h4>
+      <p style="margin:0; font-size:14px; color:var(--navy);">Contact Northbridge University Academic Accessibility Services at <code>accessibility@northbridge.edu</code> or consult with your course instructor Dr. Lee.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}

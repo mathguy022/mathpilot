@@ -1,0 +1,282 @@
+{% extends "base.html" %}{% set nav='instructor-dashboard' %}
+{% block title %}Saved Drafts — MathPilot{% endblock %}
+{% block content %}
+<style>
+/* Scoped to the saved-drafts manager page. */
+.drafts-page .page-head { display: flex; align-items: center; gap: 14px;
+  flex-wrap: wrap; margin-bottom: 20px; }
+.drafts-page .page-head h2 { margin: 0; font-size: 24px; letter-spacing: -0.5px; }
+.drafts-page .count-chip { display: inline-block; min-width: 22px; padding: 2px 9px;
+  border-radius: 999px; background: var(--purple-soft); color: var(--purple-primary);
+  font-size: 13px; font-weight: 700; text-align: center; }
+.drafts-page .section-desc { color: var(--muted); font-size: 13px; margin: 0; }
+.drafts-page .draft-row { display: flex; align-items: center; gap: 14px;
+  flex-wrap: wrap; background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
+  box-shadow: var(--shadow-sm); }
+.drafts-page .draft-row:hover { border-color: var(--purple-border); }
+.drafts-page .draft-icon { width: 40px; height: 40px; min-width: 40px;
+  border-radius: 11px; display: flex; align-items: center; justify-content: center;
+  font-size: 19px; }
+.drafts-page .draft-icon.lesson { background: var(--purple-soft); }
+.drafts-page .draft-icon.assignment { background: #eef6ff; }
+.drafts-page .draft-main { flex-grow: 1; min-width: 200px; }
+.drafts-page .draft-title { font-weight: 700; font-size: 15px; color: var(--ink); }
+.drafts-page .draft-meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+.drafts-page .badge.draft { background: var(--amber-bg); color: var(--amber-text);
+  border: 1px solid var(--amber-border); }
+.drafts-page .badge.approved { background: var(--green-bg); color: var(--green-text);
+  border: 1px solid var(--green-border); }
+.drafts-page .badge.published { background: var(--purple-light);
+  color: var(--purple-primary); border: 1px solid var(--purple-border); }
+.drafts-page .draft-actions { display: flex; gap: 8px; flex-wrap: wrap;
+  align-items: center; }
+.drafts-page .btn.danger { background: #fff; color: var(--red);
+  border: 1px solid #fecaca; }
+.drafts-page .btn.danger:hover { background: #fef2f2; }
+.drafts-page .btn:disabled { opacity: .45; cursor: not-allowed; }
+.drafts-page .link-chip { display: inline-flex; align-items: center; gap: 6px;
+  background: var(--purple-soft); border: 1px solid var(--purple-border);
+  border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12.5px;
+  color: var(--purple-primary); font-weight: 600; max-width: 100%; }
+.drafts-page .link-chip code { font-family: inherit; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.drafts-page .chip-btn { border: 1px solid var(--purple-border); background: #fff;
+  border-radius: 999px; font-size: 11.5px; font-weight: 700; color: var(--purple-primary);
+  padding: 3px 10px; cursor: pointer; }
+.drafts-page .chip-btn:hover { background: #fff; border-color: var(--purple-primary); }
+.drafts-page .assign-panel { width: 100%; background: var(--purple-soft);
+  border: 1px dashed var(--purple-border); border-radius: 12px; padding: 14px; }
+.drafts-page .assign-panel label { display: block; font-size: 12.5px;
+  font-weight: 700; margin: 8px 0 3px; color: var(--ink); }
+.drafts-page .assign-panel input, .drafts-page .assign-panel select {
+  width: 100%; border: 1px solid var(--purple-border); border-radius: 10px;
+  padding: 7px 10px; font-size: 13.5px; background: #fff; }
+.drafts-page .assign-grid { display: grid; grid-template-columns: 1fr 1fr;
+  gap: 10px; }
+.drafts-page .assign-grid .assign-title { grid-column: 1 / -1; }
+/* Two equal halves: lessons left, assignments right. */
+.drafts-page .drafts-columns { display: grid; grid-template-columns: 1fr 1fr;
+  gap: 18px; align-items: start; margin-top: 18px; }
+@media (max-width: 1100px) {
+  .drafts-page .drafts-columns { grid-template-columns: 1fr; }
+}
+.drafts-page .empty-note { color: var(--muted); font-size: 13.5px; padding: 8px 2px 14px; }
+/* The toast element is appended to <body>, so it must NOT be scoped to a
+   page wrapper — a scoped selector never matches it and the message renders
+   unstyled, far below the viewport. */
+.toast { position: fixed; bottom: 18px; right: 18px;
+  background: var(--navy); color: #fff; padding: 10px 16px; border-radius: 10px;
+  font-size: 13px; z-index: 300; box-shadow: var(--shadow);
+  max-width: min(420px, calc(100vw - 36px)); line-height: 1.45; }
+.toast.err { background: #b91c1c; }
+.drafts-page .frozen-note { font-size: 12px; color: var(--muted); }
+</style>
+<div class="drafts-page">
+<div class="page-head">
+  <h2>📂 Saved Drafts</h2>
+  <a class="btn small ghost" href="/instructor/dashboard">&larr; Back to Builder</a>
+</div>
+<p class="section-desc">Everything you have saved from the Lesson &amp; Assignment Builder. Edit drafts back in the builder, approve them, assign them to students, or delete the ones you no longer need.</p>
+
+<div class="drafts-columns">
+<section class="card">
+  <div class="row" style="justify-content:space-between; align-items:center">
+    <h3 style="margin:0">📖 Lessons <span class="count-chip">{{ lessons|length }}</span></h3>
+    <p class="section-desc">Structured lessons with sections, examples and guided practice.</p>
+  </div>
+  {% if lessons %}
+  {% for it in lessons %}
+  <div class="draft-row" id="row-lesson-{{ it.id }}">
+    <div class="draft-icon lesson">📖</div>
+    <div class="draft-main">
+      <div class="draft-title">{{ it.title or 'Untitled lesson' }}</div>
+      <div class="draft-meta">
+        {% if it.course %}{{ it.course }} · {% endif %}{{ it.topic or 'No topic' }}
+        · {{ it.sections }} section{{ '' if it.sections == 1 else 's' }}
+        · updated {{ it.updated_at[:10] }}
+      </div>
+      {% for pub in it.publications %}
+      <div style="margin-top:8px">
+        <span class="link-chip">🔗 <code title="/learn/{{ pub.link_id }}{% if pub.course %} · {{ pub.course }}{% endif %}{% if pub.due %} · due {{ pub.due }}{% endif %}">/learn/{{ pub.link_id }}{% if pub.course %} · {{ pub.course }}{% endif %}{% if pub.due %} · due {{ pub.due }}{% endif %}</code>
+          <button class="chip-btn" type="button" onclick="copyLink('/learn/{{ pub.link_id }}')">Copy</button>
+          <a class="chip-btn" href="/learn/{{ pub.link_id }}" target="_blank" rel="noopener">Open</a>
+          <button class="chip-btn" type="button" onclick="retireLink('{{ pub.link_id }}', this)">Retire link</button>
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    <span class="badge {{ it.status }}">{{ it.status }}</span>
+    <div class="draft-actions">
+      {% if it.status == 'draft' %}
+      <button class="btn small ghost" onclick="approveItem('lesson', {{ it.id }})">✓ Approve</button>
+      {% endif %}
+      {% if it.status != 'published' %}
+      <a class="btn small ghost" href="/instructor/dashboard?open=lesson:{{ it.id }}">✏️ Edit</a>
+      {% else %}
+      <button class="btn small ghost" disabled title="Published lessons are frozen — duplicate as a new draft to edit">✏️ Frozen</button>
+      {% endif %}
+      {% if it.status == 'approved' or it.status == 'published' %}
+      <button class="btn small" onclick="toggleAssign('lesson', {{ it.id }}, this)">📤 Assign</button>
+      {% endif %}
+      {% if it.status != 'published' %}
+      <button class="btn small danger" onclick="deleteItem('lesson', {{ it.id }}, this)">🗑</button>
+      {% endif %}
+      {% if it.status == 'approved' or it.status == 'published' %}
+      <div class="assign-panel" id="assign-lesson-{{ it.id }}" style="display:none">
+        <div class="assign-grid">
+          <div>
+            <label>Course</label>
+            <select id="asgcourse-lesson-{{ it.id }}">{% for o in course_options %}<option value="{{ o.label }}">{{ o.label }}</option>{% endfor %}</select>
+          </div>
+          <div>
+            <label>Due date *</label>
+            <input id="pubdue-lesson-{{ it.id }}" type="date">
+          </div>
+          <div>
+            <label>Grading policy</label>
+            <select id="pubgrade-lesson-{{ it.id }}"><option>Completion</option><option>Mastery</option></select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px; justify-content:flex-end">
+          <button class="btn small ghost" onclick="toggleAssign('lesson', {{ it.id }}, this)">Cancel</button>
+          <button class="btn small" onclick="doAssign('lesson', {{ it.id }}, this)">Assign to Students</button>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="empty-note">No saved lessons yet. Generate one in the <a href="/instructor/dashboard">Builder</a> and click “Save Draft”.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="row" style="justify-content:space-between; align-items:center">
+    <h3 style="margin:0">📝 Assignments <span class="count-chip">{{ assignments|length }}</span></h3>
+    <p class="section-desc">Question sets with verified steps, ready to send as Socratic practice.</p>
+  </div>
+  {% if assignments %}
+  {% for it in assignments %}
+  <div class="draft-row" id="row-assignment-{{ it.id }}">
+    <div class="draft-icon assignment">📝</div>
+    <div class="draft-main">
+      <div class="draft-title">{{ it.title or 'Untitled assignment' }}</div>
+      <div class="draft-meta">
+        {% if it.course %}{{ it.course }} · {% endif %}{{ it.topic or 'No topic' }}
+        · {{ it.items }} question{{ '' if it.items == 1 else 's' }}
+        · updated {{ it.updated_at[:10] }}
+      </div>
+      {% for pub in it.publications %}
+      <div style="margin-top:8px">
+        <span class="link-chip">🔗 <code title="/learn/{{ pub.link_id }}{% if pub.course %} · {{ pub.course }}{% endif %}{% if pub.due %} · due {{ pub.due }}{% endif %}">/learn/{{ pub.link_id }}{% if pub.course %} · {{ pub.course }}{% endif %}{% if pub.due %} · due {{ pub.due }}{% endif %}</code>
+          <button class="chip-btn" type="button" onclick="copyLink('/learn/{{ pub.link_id }}')">Copy</button>
+          <a class="chip-btn" href="/learn/{{ pub.link_id }}" target="_blank" rel="noopener">Open</a>
+          <button class="chip-btn" type="button" onclick="retireLink('{{ pub.link_id }}', this)">Retire link</button>
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    <span class="badge {{ it.status }}">{{ it.status }}</span>
+    <div class="draft-actions">
+      {% if it.status == 'draft' %}
+      <button class="btn small ghost" onclick="approveItem('assignment', {{ it.id }})">✓ Approve</button>
+      {% endif %}
+      {% if it.status != 'published' %}
+      <a class="btn small ghost" href="/instructor/dashboard?open=assignment:{{ it.id }}">✏️ Edit</a>
+      {% else %}
+      <button class="btn small ghost" disabled title="Published assignments are frozen — duplicate as a new draft to edit">✏️ Frozen</button>
+      {% endif %}
+      {% if it.status == 'approved' or it.status == 'published' %}
+      <button class="btn small" onclick="toggleAssign('assignment', {{ it.id }}, this)">📤 Assign</button>
+      {% endif %}
+      {% if it.status != 'published' %}
+      <button class="btn small danger" onclick="deleteItem('assignment', {{ it.id }}, this)">🗑</button>
+      {% endif %}
+      {% if it.status == 'approved' or it.status == 'published' %}
+      <div class="assign-panel" id="assign-assignment-{{ it.id }}" style="display:none">
+        <div class="assign-grid">
+          <div>
+            <label>Course</label>
+            <select id="asgcourse-assignment-{{ it.id }}">{% for o in course_options %}<option value="{{ o.label }}">{{ o.label }}</option>{% endfor %}</select>
+          </div>
+          <div>
+            <label>Due date *</label>
+            <input id="pubdue-assignment-{{ it.id }}" type="date">
+          </div>
+          <div>
+            <label>Grading policy</label>
+            <select id="pubgrade-assignment-{{ it.id }}"><option>Completion</option><option>Mastery</option></select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px; justify-content:flex-end">
+          <button class="btn small ghost" onclick="toggleAssign('assignment', {{ it.id }}, this)">Cancel</button>
+          <button class="btn small" onclick="doAssign('assignment', {{ it.id }}, this)">Assign to Students</button>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <p class="empty-note">No saved assignments yet. Create one in the <a href="/instructor/dashboard">Builder</a> and click “Save Draft”.</p>
+  {% endif %}
+</section>
+</div>
+</div>
+<script>
+function toast(msg, isErr){ const t=document.createElement('div');
+ t.className='toast'+(isErr?' err':''); t.textContent=msg;
+ document.body.appendChild(t); setTimeout(()=>t.remove(),4000); }
+function copyLink(text){ const full=window.location.origin+text;
+ if(navigator.clipboard&&navigator.clipboard.writeText){
+  navigator.clipboard.writeText(full).then(()=>toast('Link copied: '+text),
+   ()=>toast('Copy failed',true)); }
+ else { const ta=document.createElement('textarea'); ta.value=full;
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); toast('Link copied: '+text); }
+  catch(e){ toast('Copy failed',true); } ta.remove(); } }
+async function approveItem(kind,id){
+ try{ const r=await fetch('/api/'+kind+'s/'+id+'/approve',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:'{}'});
+  const j=await r.json();
+  if(!r.ok){ toast('Error: '+(j.detail||'failed'),true); return; }
+  toast('Approved — ready to assign.'); setTimeout(()=>location.reload(),900);
+ }catch(e){ toast('Request failed.',true); } }
+function toggleAssign(kind,id,btn){
+ const p=document.getElementById('assign-'+kind+'-'+id);
+ p.style.display=(p.style.display==='none')?'block':'none'; }
+async function doAssign(kind,id,btn){ btn.disabled=true;
+ const due=document.getElementById('pubdue-'+kind+'-'+id).value;
+ if(!due){ toast('Pick a due date to assign.',true); btn.disabled=false; return; }
+ const body={course:document.getElementById('asgcourse-'+kind+'-'+id).value,
+  due:due,
+  grading:document.getElementById('pubgrade-'+kind+'-'+id).value};
+ body[kind+'_id']=id;
+ try{ const r=await fetch('/api/assign',{method:'POST',
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json();
+  if(!r.ok){ toast('Error: '+(j.detail||'failed'),true); btn.disabled=false; return; }
+  toast('Assigned to '+(j.course||'course')+' · due '+j.due+'. Student link: /learn/'+j.link_id);
+  setTimeout(()=>location.reload(),1200);
+ }catch(e){ toast('Request failed.',true); btn.disabled=false; } }
+async function deleteItem(kind,id,btn){
+ const row=document.getElementById('row-'+kind+'-'+id);
+ const name=(row?row.querySelector('.draft-title').textContent:'it');
+ if(!confirm('Delete "'+name+'"? This cannot be undone.')) return;
+ try{ const r=await fetch('/api/'+kind+'s/'+id,{method:'DELETE'});
+  const j=await r.json();
+  if(!r.ok){ toast('Error: '+(j.detail||'failed'),true); return; }
+  toast('Deleted.'); setTimeout(()=>location.reload(),600);
+ }catch(e){ toast('Request failed.',true); } }
+async function retireLink(linkId,btn){
+ if(!confirm('Retire student link /learn/'+linkId+'? Students will no longer be able to open it.')) return;
+ try{ const r=await fetch('/api/publications/'+linkId,{method:'DELETE'});
+  const j=await r.json();
+  if(!r.ok){ toast('Error: '+(j.detail||'failed'),true); return; }
+  toast('Link retired.'+((j.reverted&&j.reverted.length)?' Content is editable again.':''));
+  setTimeout(()=>location.reload(),600);
+ }catch(e){ toast('Request failed.',true); } }
+</script>
+{% endblock %}

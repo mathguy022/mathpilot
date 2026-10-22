@@ -1,10 +1,24 @@
-{% extends "base.html" %}{% set active_nav='practice' %}
-{% block title %}Practice{% endblock %}
+{% extends "base.html" %}{% set active_nav='assignments' %}
+{% block title %}Assignments{% endblock %}
 {% block content %}
-<h1>Practice & Assignments</h1>
-<div class="row"><a class="btn" href="/assignments/new">＋ New Assignment</a></div>
-<div class="grid g3" style="margin-top:14px">
-{% for a in activities %}<div class="card"><h3>{{ a.title }}</h3><p class="muted">{{ a.course_topic }}</p><p>{{ a.problem_statement[:160] }}…</p>
-<div class="row"><a class="btn small" href="/activity/{{ a.id }}">Solve</a><a class="btn small ghost" href="/assignments/{{ a.id }}/edit">Edit</a></div></div>{% endfor %}
+<div class="page-header" style="margin-bottom:20px;">
+  <div class="breadcrumb">Student Workspace / Assignments</div>
+  <h1 class="page-title">Practice & Assignments</h1>
+  <p class="page-subtitle">Work assigned by your instructor — step-by-step reasoning with Socratic guidance.</p>
 </div>
+{% if cards %}
+<div class="grid g3" style="margin-top:14px">
+{% for c in cards %}<div class="card">
+  <span class="badge ok">{{ c.kind }}</span>
+  <h3 style="margin:8px 0 4px;">{{ c.title }}</h3>
+  <p class="muted">{% if c.course %}{{ c.course }}{% endif %}{% if c.due %} · due {{ c.due }}{% endif %}{% if c.grading %} · {{ c.grading }}{% endif %}{% if c.n_questions %} · {{ c.n_questions }} question{{ '' if c.n_questions == 1 else 's' }}{% endif %}</p>
+  <div class="row" style="margin-top:10px"><a class="btn small" href="/learn/{{ c.link_id }}">Open →</a></div>
+</div>{% endfor %}
+</div>
+{% else %}
+<div class="card empty-state" style="margin-top:14px">
+  <p style="font-size:18px;font-weight:700">No assignments yet</p>
+  <p class="muted">Your instructor hasn't assigned anything. Check back after your next class — new work will appear here.</p>
+</div>
+{% endif %}
 {% endblock %}

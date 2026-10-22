@@ -1,13 +1,99 @@
 {% extends "base.html" %}{% set nav='instructor-dashboard' %}
 {% block title %}Instructor Dashboard — Lesson & Assignment Builder{% endblock %}
 {% block content %}
-<h1>Instructor Dashboard</h1>
-<p class="muted">Build lessons and assignments from the same course + topic. Drafts persist in the database — refresh-safe.</p>
-<div class="split">
-<aside class="admin-panel">
+<style>
+/* Scoped to the instructor dashboard builder only. */
+.instructor-dashboard { display: flex; gap: 0; align-items: stretch;
+  min-height: calc(100vh - 220px); border: 1px solid #e2e8f0;
+  border-radius: 14px; overflow: hidden; background: #ffffff; }
+.instructor-dashboard .builder-side { width: 320px; min-width: 320px;
+  background: #f8fafc; border-right: 1px solid #e2e8f0;
+  overflow-y: auto; padding: 1.25rem; }
+.instructor-dashboard .builder-side .card { margin-bottom: 14px; }
+.instructor-dashboard .builder-side .card h3 { font-size: 14.5px; margin: 0 0 12px;
+  padding-bottom: 9px; border-bottom: 1px solid var(--border-subtle); }
+.instructor-dashboard .lesson-canvas { flex-grow: 1; min-width: 0;
+  background: #ffffff; overflow-y: auto; padding: 1.5rem; }
+.instructor-dashboard .q-card { box-shadow: var(--shadow-sm); }
+.instructor-dashboard label { display: block; font-size: 13px; font-weight: 600;
+  margin: 10px 0 4px; color: var(--ink); }
+.instructor-dashboard .check { display: flex; align-items: center; gap: 7px;
+  font-weight: 500; margin: 5px 0; }
+.instructor-dashboard select, .instructor-dashboard input,
+.instructor-dashboard textarea { width: 100%; border: 1px solid #cbd5e1;
+  border-radius: 10px; padding: 8px 10px; font-size: 14px; background: #fff; }
+/* Buttons: clear primary/secondary hierarchy + motion */
+.instructor-dashboard .btn.wide { width: 100%; }
+.instructor-dashboard .btn:hover:not(:disabled) { transform: translateY(-1px);
+  box-shadow: var(--shadow-sm); }
+.instructor-dashboard .btn:active:not(:disabled) { transform: translateY(0);
+  box-shadow: none; }
+.instructor-dashboard .btn.publish {
+  background: linear-gradient(135deg, var(--purple-primary), #8b7cf6);
+  padding: 9px 13px; font-size: 13.5px; }
+.instructor-dashboard .btn.publish:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--purple-hover), #7c6ff0);
+  box-shadow: 0 3px 10px rgba(91, 79, 233, 0.25); }
+/* Locked = faded but still clickable: a click explains the next step. */
+.instructor-dashboard .btn.locked { opacity: 0.45; cursor: pointer; }
+.instructor-dashboard .btn.locked:hover { transform: none; box-shadow: none;
+  background: var(--purple-primary); color: #fff; }
+.instructor-dashboard .btn.locked.ghost:hover { background: #ffffff;
+  color: var(--ink); border-color: var(--border); }
+.instructor-dashboard .btn.publish.locked:hover { background: linear-gradient(135deg, var(--purple-primary), #8b7cf6); }
+.instructor-dashboard .btn.nudge { animation: nudgePulse 0.7s ease 3; opacity: 1; }
+@keyframes nudgePulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(91, 79, 233, 0); }
+  50% { box-shadow: 0 0 0 7px rgba(91, 79, 233, 0.3); } }
+/* State chips: save -> approve -> publish pipeline */
+.instructor-dashboard .state-chip { display: flex; align-items: center; gap: 7px;
+  font-size: 12.5px; font-weight: 600; padding: 7px 10px; border-radius: 9px;
+  margin: 0 0 8px; line-height: 1.35; }
+.instructor-dashboard .state-chip.idle { background: #f1f5f9; color: var(--muted); }
+.instructor-dashboard .state-chip.pending { background: var(--amber-bg);
+  color: var(--amber-text); border: 1px solid var(--amber-border); }
+.instructor-dashboard .state-chip.ready { background: var(--green-bg);
+  color: var(--green-text); border: 1px solid var(--green-border); }
+.instructor-dashboard .state-chip.done { background: var(--purple-soft);
+  color: var(--purple-primary); border: 1px solid var(--purple-border); }
+/* Canvas view tabs: segmented control */
+.instructor-dashboard .tab-group { display: flex; gap: 6px; background: #f1f4fb;
+  padding: 5px; border-radius: 12px; width: fit-content; flex-wrap: wrap; }
+.instructor-dashboard .canvas-tab { font-size: 14px; padding: 8px 18px;
+  border-radius: 9px; background: transparent; color: var(--muted);
+  border: 0; font-weight: 700; }
+.instructor-dashboard .canvas-tab:hover { color: var(--ink); background: #fff; }
+.instructor-dashboard .canvas-tab.active { background: var(--purple-primary);
+  color: #fff; box-shadow: var(--shadow-sm); }
+.instructor-dashboard .canvas-tab.exit { background: #fff;
+  color: var(--purple-primary); border: 1px dashed var(--purple-border); }
+.instructor-dashboard .canvas-tab.exit:hover { background: var(--purple-soft);
+  color: var(--purple-primary); }
+.instructor-dashboard .empty-state { text-align: center; padding: 48px 20px; color: var(--muted); }
+.instructor-dashboard .spinner { display: inline-block; width: 14px; height: 14px;
+  border: 2px solid #cbd5e1; border-top-color: var(--purple-primary);
+  border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* The toast element is appended to <body>, so it must NOT be scoped to a
+   page wrapper — a scoped selector never matches it and the message renders
+   unstyled, far below the viewport. */
+.toast { position: fixed; bottom: 18px; right: 18px;
+  background: var(--navy); color: #fff; padding: 10px 16px; border-radius: 10px;
+  font-size: 13px; z-index: 300; box-shadow: var(--shadow);
+  max-width: min(420px, calc(100vw - 36px)); line-height: 1.45; }
+.instructor-dashboard .pub-note { font-size: 13px; color: var(--amber-text);
+  background: var(--amber-bg); border: 1px solid var(--amber-border);
+  padding: 9px 12px; border-radius: 9px; margin: 0; }
+@media (max-width: 900px) {
+  .instructor-dashboard { flex-direction: column; }
+  .instructor-dashboard .builder-side { width: 100%; min-width: 0;
+    border-right: none; border-bottom: 1px solid #e2e8f0; }
+}
+</style>
+<div class="instructor-dashboard">
+<aside class="builder-side" aria-label="Lesson builder controls">
   <section class="card"><h3>Course & Topic</h3>
   <label for="les-course">Course</label>
-  <select id="les-course" onchange="updateTopicHint()">{% for c in courses %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}</select>
+  <select id="les-course" onchange="updateTopicHint()">{% for o in course_options %}<option value="{{ o.value }}">{{ o.label }}</option>{% endfor %}</select>
   <label for="les-topic">Topic <small class="muted" id="topic-hint"></small></label>
   <input id="les-topic" placeholder="e.g. Limits" value="Limits">
   <label for="les-objectives">Learning objectives (optional)</label>
@@ -19,7 +105,8 @@
   <label for="les-detail">Lesson depth</label>
   <select id="les-detail"><option value="brief">Brief</option><option value="standard" selected>Standard</option><option value="detailed">Detailed</option></select>
   <label class="check"><input type="checkbox" id="les-worked" checked style="width:auto"> Require worked examples</label>
-  <div class="row" style="margin-top:10px"><button class="btn small" id="genLessonBtn" onclick="genLesson()">📖 Generate Lesson</button></div>
+  <div class="row" style="margin-top:10px"><button class="btn wide" id="genLessonBtn" onclick="genLesson()">📖 Generate Lesson</button></div>
+  <div class="row" style="margin-top:8px"><button class="btn small ghost" id="saveLessonBtn" onclick="saveLesson()">💾 Save Draft</button><button class="btn small ghost" id="approveLessonBtn" onclick="approveLesson()">✓ Approve</button></div>
   <div id="les-out" style="margin-top:8px"><p class="muted">No lesson draft yet.</p></div></section>
   <section class="card"><h3>📝 Assignment</h3>
   <label for="asg-count">Number of questions</label>
@@ -30,34 +117,50 @@
   <label class="check"><input type="radio" name="cfg-diff" value="easy" style="width:auto"> Easy focus</label>
   <label class="check"><input type="radio" name="cfg-diff" value="hard" style="width:auto"> Hard focus</label>
   </div>
-  <label class="check"><input type="checkbox" id="asg-from-lesson" style="width:auto"> Generate from approved lesson (uses its concepts)</label>
-  <div class="row" style="margin-top:10px"><button class="btn small" id="genAsgBtn" onclick="genAssignment()">📝 Create Assignment</button></div>
+  <label class="check"><input type="checkbox" id="asg-from-lesson" style="width:auto"> Generate from approved lesson on canvas (uses its concepts)</label>
+  <p class="muted" style="margin:2px 0 0">Uses the Course &amp; Topic above — no lesson needed. Check the box only to scope questions to the lesson currently on the canvas.</p>
+  <div class="row" style="margin-top:10px"><button class="btn wide" id="genAsgBtn" onclick="genAssignment()">📝 Create Assignment</button></div>
+  <div class="row" style="margin-top:8px"><button class="btn small ghost" id="saveAsgBtn" onclick="saveAssignment()">💾 Save Draft</button><button class="btn small ghost" id="approveAsgBtn2" onclick="approveAssignment()">✓ Approve</button></div>
   <div id="asg-out" style="margin-top:8px"><p class="muted">No assignment draft yet.</p></div></section>
-  <section class="card"><h3>🚀 Review & Publish</h3>
-  <div class="row"><button class="btn small ghost" id="approveBtn" onclick="approveLesson()" disabled>✓ Approve Lesson</button></div>
-  <div class="row" style="margin-top:8px"><button class="btn small ghost" id="approveAsgBtn" onclick="approveAssignment()" disabled>✓ Approve Assignment</button></div>
+  <section class="card"><h3>🚀 Review, Publish & Assign</h3>
+  <div class="state-chip idle" id="state-lesson">📖 Lesson: nothing loaded yet</div>
+  <div class="state-chip idle" id="state-asg">📝 Assignment: nothing loaded yet</div>
+  <div class="row"><button class="btn small ghost locked" id="approveBtn" onclick="approveLesson()" title="Save a lesson draft first">✓ Approve Lesson</button></div>
+  <div class="row" style="margin-top:8px"><button class="btn small ghost locked" id="approveAsgBtn" onclick="approveAssignment()" title="Save an assignment draft first">✓ Approve Assignment</button></div>
   <label for="pub-title" style="margin-top:10px">Package title</label>
   <input id="pub-title" placeholder="e.g. Week 3 — Limits">
-  <label for="pub-due">Due date</label>
-  <input id="pub-due" type="date">
-  <label for="pub-grade">Grading policy</label>
-  <select id="pub-grade"><option>Completion</option><option>Mastery</option></select>
   <div class="row" style="margin-top:10px">
-    <button class="btn small" id="pubLessonBtn" onclick="publishSel('lesson')" disabled>Publish Lesson</button>
-    <button class="btn small" id="pubAsgBtn" onclick="publishSel('assignment')" disabled>Publish Assignment</button>
-    <button class="btn small" id="pubBothBtn" onclick="publishSel('both')" disabled>Publish Both</button>
+    <button class="btn publish locked" id="pubLessonBtn" onclick="publishSel('lesson')" title="Approve the lesson to unlock publishing">Publish Lesson</button>
+    <button class="btn publish locked" id="pubAsgBtn" onclick="publishSel('assignment')" title="Approve the assignment to unlock publishing">Publish Assignment</button>
+    <button class="btn publish locked" id="pubBothBtn" onclick="publishSel('both')" title="Approve both drafts to unlock publishing">Publish Both</button>
   </div>
-  <div id="pub-out" style="margin-top:8px"></div></section>
+  <p class="muted" id="pub-hint" style="margin-top:8px">Publish unlocks once a draft is approved.</p>
+  <div id="pub-out" style="margin-top:8px"></div>
+  <hr style="margin:14px 0; border:none; border-top:1px solid var(--border)">
+  <h3 style="margin:0 0 4px">📤 Assign to Students</h3>
+  <p class="muted">Assign a published lesson or assignment to a course with a due date. Approving first? Assign publishes it for you.</p>
+  <label for="asg-course" style="margin-top:8px">Course</label>
+  <select id="asg-course">{% for o in course_options %}<option value="{{ o.label }}">{{ o.label }}</option>{% endfor %}</select>
+  <label for="asg-due" style="margin-top:8px">Due date *</label>
+  <input id="asg-due" type="date">
+  <label for="asg-grade" style="margin-top:8px">Grading policy</label>
+  <select id="asg-grade"><option>Completion</option><option>Mastery</option></select>
+  <div class="row" style="margin-top:10px">
+    <button class="btn locked" id="assignLessonBtn" onclick="assignSel('lesson')" title="Publish (if needed) and assign the lesson">📤 Assign Lesson</button>
+    <button class="btn locked" id="assignAsgBtn" onclick="assignSel('assignment')" title="Publish (if needed) and assign the assignment">📤 Assign Assignment</button>
+  </div>
+  <div id="assign-out" style="margin-top:8px"></div></section>
   <section class="card"><h3>📂 Saved Drafts</h3>
-  <div class="row"><button class="btn small ghost" onclick="loadDrafts()">↻ Refresh list</button></div>
-  <div id="drafts-out" style="margin-top:8px"><p class="muted">Click refresh to list saved drafts.</p></div></section>
+  <p class="muted">Browse, edit, assign and delete saved lessons and assignments on their own page.</p>
+  <div class="row" style="margin-top:8px"><a class="btn ghost wide" href="/instructor/drafts">📂 Open Saved Drafts</a></div></section>
 </aside>
-<main class="canvas">
+<main class="lesson-canvas" id="lesson-canvas" aria-label="Active lesson canvas">
 <div class="card canvas-head"><h3>Workspace Canvas</h3>
 <p class="muted" id="canvas-meta">Nothing loaded yet. Generate a lesson or an assignment.</p>
-<div class="row" role="tablist" aria-label="Canvas view">
-<button class="btn small ghost" id="tabLesson" onclick="showTab('lesson')">📖 Lesson</button>
-<button class="btn small ghost" id="tabAsg" onclick="showTab('assignment')">📝 Assignment</button>
+<div class="tab-group" role="tablist" aria-label="Canvas view">
+<button class="btn canvas-tab" id="tabLesson" onclick="showTab('lesson')">📖 Lesson</button>
+<button class="btn canvas-tab" id="tabAsg" onclick="showTab('assignment')">📝 Assignment</button>
+<button class="btn canvas-tab exit" id="tabDrafts" onclick="window.location.href='/instructor/drafts'" title="Open the Saved Drafts manager">📂 Saved draft ↗</button>
 </div></div>
 <div id="preview-lesson"><div class="card empty-state">
 <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.5;margin-bottom:12px"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
@@ -79,6 +182,13 @@ function asMath(s){ s=String(s==null?"":s).trim(); if(!s) return "";
  if(/\$|\\\(|\\\[/.test(s)) return s; return "$"+s+"$"; }
 function courseName(){ const el=document.getElementById('les-course');
  return el.options[el.selectedIndex]?el.options[el.selectedIndex].text:''; }
+// DB course id for the selected catalog course (null when no seeded match;
+// course_id is optional on save). Rendered from the seeded Course rows.
+// Single-active-lesson: each render fully replaces its preview container
+// (innerHTML =), never appends — opening or generating content clears the
+// previous canvas state.
+const COURSE_IDS={ {% for c in courses %}{{ c.title|tojson }}:{{ c.id }}{% if not loop.last %},{% endif %} {% endfor %} };
+function courseId(){ const id=COURSE_IDS[courseName()]; return id!=null?id:null; }
 // Per-course topic suggestions (single source: mirrors app/courses.py).
 const COURSE_TOPICS={"Pre-Algebra":["Order of Operations","Fractions & Decimals","Basic Linear Equations"],"Algebra 1":["Linear Equations","Systems of Equations","Factoring Polynomials","Quadratics"],"Algebra 2":["Logarithms & Exponentials","Complex Numbers","Conic Sections","Rational Functions"],"Trigonometry":["Unit Circle Basics","Trig Identities","Law of Sines/Cosines","Inverse Trig"],"Pre-Calculus":["Function Analysis","Vectors & Matrices","Polar Coordinates","Intro to Limits"],"Calculus 1":["Limits & Continuity","Derivatives","Applications of Derivatives","Integrals"],"Calculus I":["Limits & Continuity","Derivatives","Applications of Derivatives","Integrals"]};
 function updateTopicHint(){ const t=document.getElementById('topic-hint');
@@ -86,11 +196,18 @@ function updateTopicHint(){ const t=document.getElementById('topic-hint');
  t.textContent=sug?('Try: '+sug.slice(0,3).join(' · ')):'';
  const inp=document.getElementById('les-topic');
  if(sug&&!sug.some(s=>inp.value.toLowerCase().includes(s.split(' ')[0].toLowerCase()))){ inp.placeholder='e.g. '+sug[0]; } }
-window.addEventListener('load',updateTopicHint);
+window.addEventListener('load',()=>{ updateTopicHint();
+ // Deep-open from the Saved Drafts page (?open=lesson:ID or assignment:ID).
+ const p=new URLSearchParams(window.location.search); const open=p.get('open');
+ if(open){ const [kind,id]=open.split(':'); const n=parseInt(id);
+  if(kind==='lesson'&&n) openLesson(n); else if(kind==='assignment'&&n) openAssign(n); }
+ else showTab('lesson'); });
 function diffLevel(){ const el=document.querySelector('input[name="cfg-diff"]:checked'); return el?el.value:'mixed'; }
 function showTab(t){ TAB=t;
  document.getElementById('preview-lesson').style.display=t==='lesson'?'block':'none';
- document.getElementById('preview-asg').style.display=t==='assignment'?'block':'none'; }
+ document.getElementById('preview-asg').style.display=t==='assignment'?'block':'none';
+ document.getElementById('tabLesson').classList.toggle('active',t==='lesson');
+ document.getElementById('tabAsg').classList.toggle('active',t==='assignment'); }
 // Minimal markdown-lite: escape HTML, then paragraphs / numbered items /
 // bold / inline code. $...$ and $$...$$ pass through for KaTeX.
 function renderPreview(src){ let h=esc(src);
@@ -121,8 +238,7 @@ async function genLesson(){ const out=document.getElementById('les-out');
   if(!r.ok){ out.innerHTML='<p class="muted">No lesson draft.</p>'; toast('Error: '+(j.detail||'failed')); btn.disabled=false; return; }
   LESSON=j.lesson; LESSON_ID=null; LESSON_STATUS='unsaved';
   renderLesson(); showTab('lesson');
-  out.innerHTML='<p class="muted">Lesson generated'+(j.truncated_notes?' (notes truncated to 4000 chars)':'')+'. Review, then Save Draft.</p>'
-   +'<div class="row" style="margin-top:6px"><button class="btn small" onclick="saveLesson()">💾 Save Draft</button></div>';
+  out.innerHTML='<p class="muted">Lesson generated'+(j.truncated_notes?' (notes truncated to 4000 chars)':'')+'. Review, then Save Draft or Approve.</p>';
  }catch(e){ toast('Request failed.'); }
  btn.disabled=false; }
 function renderLesson(){ const prev=document.getElementById('preview-lesson');
@@ -144,7 +260,6 @@ function renderLesson(){ const prev=document.getElementById('preview-lesson');
   return h+'</div>'; }).join('');
  prev.innerHTML=html;
  if(window.renderMath) window.renderMath(prev);
- document.getElementById('approveBtn').disabled=!LESSON_ID;
  refreshPublish(); }
 function collectEdits(){ if(!LESSON) return;
  const t=document.getElementById('edit-title'); if(t) LESSON.title=t.value;
@@ -152,13 +267,16 @@ function collectEdits(){ if(!LESSON) return;
 async function saveLesson(){ if(!LESSON){ toast('Generate a lesson first.'); return; }
  collectEdits();
  try{ const r=await fetch('/api/lessons/save',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({id:LESSON_ID,course_id:parseInt(document.getElementById('les-course').value)||null,
+  body:JSON.stringify({id:LESSON_ID,course_id:courseId(),
    topic:document.getElementById('les-topic').value,lesson:LESSON,settings:{},source_materials:[]})});
   const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
   LESSON_ID=j.id; LESSON_STATUS=j.status; renderLesson();
-  document.getElementById('les-out').innerHTML='<p class="muted">Draft saved (id '+j.id+').</p>';
+  document.getElementById('les-out').innerHTML='<p class="muted">Draft saved (id '+j.id+'). You can Approve or Publish it.</p>';
  }catch(e){ toast('Request failed.'); } }
-async function approveLesson(){ if(!LESSON_ID){ toast('Save a draft first.'); return; }
+async function approveLesson(){
+ if(!LESSON){ toast('No lesson on the canvas — generate one first.'); nudge('genLessonBtn'); return; }
+ if(!LESSON_ID){ toast('Save the lesson draft first (💾 Save Draft).'); nudge('saveLessonBtn'); return; }
+ if(LESSON_STATUS==='published'){ toast('Published lessons are frozen — open a new draft to edit.'); return; }
  collectEdits();
  try{ const r=await fetch('/api/lessons/'+LESSON_ID+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({lesson:LESSON})});
@@ -170,9 +288,11 @@ async function approveLesson(){ if(!LESSON_ID){ toast('Save a draft first.'); re
 async function genAssignment(){ const out=document.getElementById('asg-out');
  const btn=document.getElementById('genAsgBtn'); btn.disabled=true;
  const n=Math.max(1,Math.min(10,parseInt(document.getElementById('asg-count').value||'5')));
+ const topic=document.getElementById('les-topic').value.trim();
+ if(!topic){ toast('Enter a topic first (e.g. Limits, Chain Rule).'); nudge('les-topic'); btn.disabled=false; return; }
  out.innerHTML='<p class="muted"><span class="spinner"></span>Generating assignment… Verifying with SymPy…</p>';
  try{ const r=await fetch('/api/assignments/generate',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({course:courseName(),topic:document.getElementById('les-topic').value,
+  body:JSON.stringify({course:courseName(),topic:topic,
    notes:document.getElementById('les-notes').value,num_questions:n,
    difficulty_balance:diffLevel(),from_lesson_id:document.getElementById('asg-from-lesson').checked?LESSON_ID:null})});
   const j=await r.json();
@@ -180,8 +300,7 @@ async function genAssignment(){ const out=document.getElementById('asg-out');
   ASSIGN={items:j.items,settings:{title:'',due_date:'',attempts_allowed:1,grading_policy:'Completion',hints_enabled:true,solution_release:'after-due'}};
   ASSIGN_ID=null; ASSIGN_STATUS='unsaved';
   renderAssign(); showTab('assignment');
-  out.innerHTML='<p class="muted">'+j.items.length+' items, '+j.verified+' verified, '+j.discarded+' discarded.</p>'
-   +'<div class="row" style="margin-top:6px"><button class="btn small" onclick="saveAssignment()">💾 Save Draft</button></div>';
+  out.innerHTML='<p class="muted">'+j.items.length+' items, '+j.verified+' verified, '+j.discarded+' discarded.</p>';
   if((j.discard_reasons||[]).length) out.innerHTML+='<details><summary><small class="muted">Discard reasons</small></summary><pre>'+esc(j.discard_reasons.join('\n'))+'</pre></details>';
  }catch(e){ toast('Request failed.'); }
  btn.disabled=false; }
@@ -196,47 +315,126 @@ function renderAssign(){ const prev=document.getElementById('preview-asg');
   +'<details class="steps"><summary>Steps</summary><ol>'+(q.steps||[]).map(s=>'<li>'+esc(s.description||'')+' → '+esc(asMath(s.expected_input_latex))+'</li>').join('')+'</ol></details></div>').join('')
   ||'<div class="card empty-state"><p class="muted">All items removed.</p></div>';
  if(window.renderMath) window.renderMath(prev);
- document.getElementById('approveAsgBtn').disabled=!ASSIGN_ID;
  refreshPublish(); }
 function moveItem(i,d){ const j=i+d; if(j<0||j>=ASSIGN.items.length) return;
  const t=ASSIGN.items[i]; ASSIGN.items[i]=ASSIGN.items[j]; ASSIGN.items[j]=t; renderAssign(); }
 function delItem(i){ ASSIGN.items.splice(i,1); renderAssign(); }
 async function saveAssignment(){ if(!ASSIGN){ toast('Create an assignment first.'); return; }
+ const topic=document.getElementById('les-topic').value.trim();
  try{ const r=await fetch('/api/assignments/save',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({id:ASSIGN_ID,course_id:parseInt(document.getElementById('les-course').value)||null,
+  body:JSON.stringify({id:ASSIGN_ID,course_id:courseId(),
    source_lesson_id:document.getElementById('asg-from-lesson').checked?LESSON_ID:null,
-   topic:document.getElementById('les-topic').value,title:document.getElementById('pub-title').value||'Untitled assignment',
+   topic:topic,title:document.getElementById('pub-title').value||(topic?topic+' — Assignment':'Untitled assignment'),
    items:ASSIGN.items,settings:ASSIGN.settings})});
   const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
   ASSIGN_ID=j.id; ASSIGN_STATUS=j.status; renderAssign();
-  document.getElementById('asg-out').innerHTML='<p class="muted">Draft saved (id '+j.id+').</p>';
+  document.getElementById('asg-out').innerHTML='<p class="muted">Draft saved (id '+j.id+'). You can Approve or Publish it.</p>';
  }catch(e){ toast('Request failed.'); } }
-async function approveAssignment(){ if(!ASSIGN_ID){ toast('Save a draft first.'); return; }
+async function approveAssignment(){
+ if(!ASSIGN){ toast('No assignment on the canvas — create one first.'); nudge('genAsgBtn'); return; }
+ if(!ASSIGN_ID){ toast('Save the assignment draft first (💾 Save Draft).'); nudge('saveAsgBtn'); return; }
+ if(ASSIGN_STATUS==='published'){ toast('Published assignments are frozen — open a new draft to edit.'); return; }
  try{ const r=await fetch('/api/assignments/'+ASSIGN_ID+'/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
   const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
   ASSIGN_STATUS='approved'; renderAssign(); toast('Assignment approved.');
  }catch(e){ toast('Request failed.'); } }
 // --- Publishing ---
+function stateOf(status){
+ if(!status) return ['idle','nothing loaded yet'];
+ if(status==='unsaved') return ['pending','generated — click Save Draft'];
+ if(status==='draft') return ['pending','saved as draft — approve to publish'];
+ if(status==='approved') return ['ready','approved ✓ — ready to publish'];
+ if(status==='published') return ['done','published — frozen snapshot'];
+ return ['idle',status]; }
+function setStateChip(el,text,cls){ el.textContent=text; el.className='state-chip '+cls; }
 function refreshPublish(){
- document.getElementById('pubLessonBtn').disabled=!(LESSON_STATUS==='approved');
- document.getElementById('pubAsgBtn').disabled=!(ASSIGN_STATUS==='approved');
- document.getElementById('pubBothBtn').disabled=!(LESSON_STATUS==='approved'&&ASSIGN_STATUS==='approved'); }
-async function publishSel(which){ const box=document.getElementById('pub-out');
+ setLock(document.getElementById('pubLessonBtn'),LESSON_STATUS!=='approved',
+  LESSON_STATUS==='approved'?'Publish the approved lesson as a student link':'Approve the lesson to unlock publishing');
+ setLock(document.getElementById('pubAsgBtn'),ASSIGN_STATUS!=='approved',
+  ASSIGN_STATUS==='approved'?'Publish the approved assignment as a student link':'Approve the assignment to unlock publishing');
+ setLock(document.getElementById('pubBothBtn'),!(LESSON_STATUS==='approved'&&ASSIGN_STATUS==='approved'),
+  (LESSON_STATUS==='approved'&&ASSIGN_STATUS==='approved')?'Publish the approved lesson and assignment as one package':'Approve both drafts to unlock publishing');
+ setLock(document.getElementById('approveBtn'),!(LESSON_ID&&LESSON_STATUS!=='published'),
+  LESSON_ID?'Approve (verify with SymPy) the lesson draft':'Save a lesson draft first');
+ setLock(document.getElementById('approveAsgBtn'),!(ASSIGN_ID&&ASSIGN_STATUS!=='published'),
+  ASSIGN_ID?'Approve (verify with SymPy) the assignment draft':'Save an assignment draft first');
+ setLock(document.getElementById('assignLessonBtn'),!(LESSON_ID&&(LESSON_STATUS==='approved'||LESSON_STATUS==='published')),
+  (LESSON_ID&&(LESSON_STATUS==='approved'||LESSON_STATUS==='published'))?'Assign the lesson to a course with a due date':'Approve the lesson first, then assign it');
+ setLock(document.getElementById('assignAsgBtn'),!(ASSIGN_ID&&(ASSIGN_STATUS==='approved'||ASSIGN_STATUS==='published')),
+  (ASSIGN_ID&&(ASSIGN_STATUS==='approved'||ASSIGN_STATUS==='published'))?'Assign the assignment to a course with a due date':'Create and approve the assignment first, then assign it');
+ const l=LESSON?stateOf(LESSON_STATUS):['idle','nothing loaded yet'];
+ const a=ASSIGN?stateOf(ASSIGN_STATUS):['idle','nothing loaded yet'];
+ setStateChip(document.getElementById('state-lesson'),'📖 Lesson: '+l[1],l[0]);
+ setStateChip(document.getElementById('state-asg'),'📝 Assignment: '+a[1],a[0]);
+ const hint=document.getElementById('pub-hint');
+ if(hint) hint.textContent=(LESSON_STATUS==='approved'||ASSIGN_STATUS==='approved')
+  ?'Publishing creates a student link (/learn/…) from the approved content.'
+  :'Publish unlocks once a draft is approved — clicking a faded button explains what is missing.'; }
+// A locked button is faded but still clickable: clicking it explains the next step.
+function setLock(el,locked,tip){ el.classList.toggle('locked',locked);
+ if(tip!=null) el.title=tip; }
+function nudge(id){ const el=document.getElementById(id); if(!el) return;
+ el.classList.remove('nudge'); void el.offsetWidth;
+ el.classList.add('nudge'); el.scrollIntoView({block:'center',behavior:'smooth'});
+ setTimeout(()=>el.classList.remove('nudge'),2200); }
+function guardPublish(which){
+ if(which==='lesson'||which==='both'){
+  if(!LESSON) return {msg:'No lesson on the canvas — generate one, or reopen a saved lesson from 📂 Saved draft.',nudge:'genLessonBtn'};
+  if(!LESSON_ID) return {msg:'Save the lesson draft first (💾 Save Draft).',nudge:'saveLessonBtn'};
+  if(LESSON_STATUS==='published') return {msg:'That lesson is already published (frozen). Its student link is on the 📂 Saved Drafts page.',nudge:'tabDrafts'};
+  if(LESSON_STATUS!=='approved') return {msg:'Approve the lesson first (✓ Approve Lesson) to unlock publishing.',nudge:'approveBtn'}; }
+ if(which==='assignment'||which==='both'){
+  if(!ASSIGN) return {msg:'No assignment on the canvas — create one, or reopen a saved one from 📂 Saved draft.',nudge:'genAsgBtn'};
+  if(!ASSIGN_ID) return {msg:'Save the assignment draft first (💾 Save Draft).',nudge:'saveAsgBtn'};
+  if(ASSIGN_STATUS==='published') return {msg:'That assignment is already published (frozen). Its student link is on the 📂 Saved Drafts page.',nudge:'tabDrafts'};
+  if(ASSIGN_STATUS!=='approved') return {msg:'Approve the assignment first (✓ Approve Assignment) to unlock publishing.',nudge:'approveAsgBtn'}; }
+ return null; }
+async function publishSel(which){
+ const box=document.getElementById('pub-out');
+ const block=guardPublish(which);
+ if(block){ toast(block.msg); nudge(block.nudge);
+  box.innerHTML='<p class="pub-note">'+esc(block.msg)+'</p>'; return; }
  box.innerHTML='<p class="muted">Publishing…</p>';
- const body={title:document.getElementById('pub-title').value,due:document.getElementById('pub-due').value,
-  grading:document.getElementById('pub-grade').value};
+ const body={title:document.getElementById('pub-title').value,due:'',
+  grading:'Completion'};
  if(which==='lesson'||which==='both') body.lesson_id=LESSON_ID;
  if(which==='assignment'||which==='both') body.assignment_id=ASSIGN_ID;
  try{ const r=await fetch('/api/publications',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); box.innerHTML=''; return; }
   window.location.href='/success/'+j.link_id;
  }catch(e){ toast('Request failed.'); box.innerHTML=''; } }
-// --- Drafts ---
-async function loadDrafts(){ const box=document.getElementById('drafts-out');
- box.innerHTML='<p class="muted">Loading…</p>';
- try{ const [l,a]=await Promise.all([fetch('/api/lessons').then(r=>r.json()),fetch('/api/assignments').then(r=>r.json())]);
-  box.innerHTML='<p><b>Lessons</b></p>'+(l.lessons||[]).map(x=>'<p><small>'+esc(x.title||('Lesson '+x.id))+' · '+esc(x.topic)+' · '+esc(x.status)+'</small> <button class="btn small ghost" onclick="openLesson('+x.id+')">Open</button></p>').join('')+'<p><b>Assignments</b></p>'+(a.assignments||[]).map(x=>'<p><small>'+esc(x.title||('Assignment '+x.id))+' · '+esc(x.topic)+' · '+esc(x.status)+'</small> <button class="btn small ghost" onclick="openAssign('+x.id+')">Open</button></p>').join('');
- }catch(e){ box.innerHTML='<p class="muted">Failed to load.</p>'; } }
+function guardAssign(which){
+ if(which==='lesson'){
+  if(!LESSON) return {msg:'No lesson on the canvas — generate one, or reopen a saved lesson from 📂 Saved draft.',nudge:'genLessonBtn'};
+  if(!LESSON_ID) return {msg:'Save the lesson draft first (💾 Save Draft).',nudge:'saveLessonBtn'};
+  if(LESSON_STATUS!=='approved'&&LESSON_STATUS!=='published') return {msg:'Approve the lesson first (✓ Approve Lesson), then assign it.',nudge:'approveBtn'}; }
+ if(which==='assignment'){
+  if(!ASSIGN) return {msg:'No assignment on the canvas — create one, or reopen a saved one from 📂 Saved draft.',nudge:'genAsgBtn'};
+  if(!ASSIGN_ID) return {msg:'Save the assignment draft first (💾 Save Draft).',nudge:'saveAsgBtn'};
+  if(ASSIGN_STATUS!=='approved'&&ASSIGN_STATUS!=='published') return {msg:'Approve the assignment first (✓ Approve Assignment), then assign it.',nudge:'approveAsgBtn'}; }
+ const due=document.getElementById('asg-due').value;
+ if(!due) return {msg:'Pick a due date to assign.',nudge:'asg-due'};
+ return null; }
+async function assignSel(which){
+ const box=document.getElementById('assign-out');
+ const block=guardAssign(which);
+ if(block){ toast(block.msg); nudge(block.nudge);
+  box.innerHTML='<p class="pub-note">'+esc(block.msg)+'</p>'; return; }
+ box.innerHTML='<p class="muted">Assigning…</p>';
+ const body={course:document.getElementById('asg-course').value,
+  due:document.getElementById('asg-due').value,
+  grading:document.getElementById('asg-grade').value,
+  title:document.getElementById('pub-title').value};
+ if(which==='lesson') body.lesson_id=LESSON_ID;
+ if(which==='assignment') body.assignment_id=ASSIGN_ID;
+ try{ const r=await fetch('/api/assign',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); box.innerHTML=''; return; }
+  box.innerHTML='<p class="muted">Assigned to '+esc(j.course||'course')+' · due '+esc(j.due)+'.</p>'
+   +'<div class="row" style="margin-top:6px"><span class="link-chip">🔗 <code>/learn/'+esc(j.link_id)+'</code>'
+   +'<a class="chip-btn" href="'+esc(j.solve_url)+'" target="_blank" rel="noopener">Open</a></span></div>';
+  toast('Assigned — student link ready.');
+ }catch(e){ toast('Request failed.'); box.innerHTML=''; } }
+// --- Draft restore (deep-open from /instructor/drafts?open=...) ---
 async function openLesson(id){ try{ const r=await fetch('/api/lessons/'+id); const j=await r.json();
   if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
   LESSON=j.lesson; LESSON_ID=j.id; LESSON_STATUS=j.status; renderLesson(); showTab('lesson');

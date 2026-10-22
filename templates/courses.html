@@ -1,7 +1,29 @@
-{% extends "base.html" %}{% set nav='courses' %}
-{% block title %}Courses{% endblock %}
+{% extends "base.html" %}{% set active_nav='courses' %}{% set nav='courses' %}
+{% block title %}My Courses{% endblock %}
 {% block content %}
-<h1>My Courses</h1>
-<div class="grid g3">{% for c in courses %}<div class="card"><h3>📘 {{ c.title }}</h3><p class="muted">{{ c.topic }}</p>
-{% for a in activities %}<p><a href="/activity/{{ a.id }}">{{ a.title }}</a></p>{% endfor %}</div>{% endfor %}</div>
+<div class="page-header" style="margin-bottom:20px;">
+  <div class="breadcrumb">Northbridge University / My Courses</div>
+  <h1 class="page-title">My Courses</h1>
+  <p class="page-subtitle">Enrolled mathematics classes, active units, and assigned problem sets.</p>
+</div>
+
+<div class="grid g3">
+  {% for c in courses %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h3 style="margin:0; font-size:18px;">📘 {{ c.title }}</h3>
+      <span class="badge ok">Enrolled</span>
+    </div>
+    <p class="muted" style="margin:8px 0 14px; font-size:13px;">{{ c.topic }} · Northbridge Community College</p>
+    
+    <div style="border-top:1px solid var(--border); padding-top:12px; margin-top:10px;">
+      <div style="font-size:12px; font-weight:700; color:var(--muted); margin-bottom:8px;">AVAILABLE MODULES</div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <a href="/practice" class="btn small" style="text-align:center;">Launch Chain Rule Practice →</a>
+        <a href="/activity/1" class="btn small ghost" style="text-align:center;">Related Rates Practice</a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
 {% endblock %}

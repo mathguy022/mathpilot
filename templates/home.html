@@ -1,38 +1,81 @@
-{% extends "base.html" %}{% set nav='home' %}
-{% block title %}Home{% endblock %}
+{% extends "base.html" %}{% set nav='home' %}{% set active_nav='dashboard' %}
+{% block title %}Dashboard{% endblock %}
 {% block content %}
-<h1>Good morning, Alex! 👋</h1>
-<p class="muted">Let's solve some math together. Socratic guidance — hints, not answers.</p>
+<div class="page-header" style="margin-bottom:20px;">
+  <div class="breadcrumb">Calculus I / Student Dashboard</div>
+  <h1 class="page-title">Welcome back, Maya! 👋</h1>
+  <p class="page-subtitle">Build your mathematical reasoning, one step at a time.</p>
+</div>
+
 <div class="grid g2">
-  <div class="card">
-    <h3>🎯 Today's Problem</h3>
-    {% if activities %}
-    {% set a = activities[0] %}
-    <p><b>{{ a.title }}</b></p>
-    <div class="problem">{{ a.problem_statement }}</div>
-    <div class="row" style="margin-top:12px">
-      <a class="btn" href="/activity/{{ a.id }}">Start solving</a>
-      <a class="btn ghost" href="/assignments">All practice</a>
+  <div class="card" style="border-left: 4px solid var(--purple-primary);">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <div>
+        <span class="badge ok">Recommended Next</span>
+        <h3 style="margin:10px 0 6px; font-size:18px;">Chain rule practice</h3>
+        <p class="muted">Calculus I · Dr. Lee</p>
+      </div>
+      <a class="btn" href="/practice">Continue Practice →</a>
     </div>
-    {% else %}
-    <p class="muted">No activities yet. <a href="/assignments/new">Create one</a>.</p>
-    {% endif %}
+    <div style="background:var(--purple-soft); padding:14px; border-radius:10px; margin:14px 0; border:1px solid var(--purple-border); text-align:center; font-size:18px;">
+      $$f(x) = (3x + 1)^2$$
+    </div>
+    <p style="font-size:13px; color:var(--muted); margin:0;">
+      Step 1 verified · In progress on Step 2 (Chain Rule application).
+    </p>
   </div>
+
   <div class="card">
-    <h3>🤖 MathPilot Tutor</h3>
-    <p class="muted">Here to help, not give you the answer.</p>
-    <div class="msg"><div class="who">MathPilot</div>Great start! What do you think is the first step to solve this equation?</div>
-    <div class="row"><a class="btn small ghost" href="/activity/{{ activities[0].id if activities else 1 }}">💡 Get a Hint</a><a class="btn small ghost" href="/progress">📊 Check Answer</a></div>
+    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <h3 style="margin:0 0 10px; font-size:18px;">🤖 AI Math Tutor</h3>
+      <span class="tag">Active</span>
+    </div>
+    <p class="muted" style="font-size:13px;">Socratic guidance — progressive hints, not answer dumps.</p>
+    <div class="tutor-msg-bubble" style="margin:12px 0;">
+      <div class="tutor-avatar">🤖</div>
+      <div style="font-size:13px; line-height:1.6;">
+        "Great start! You correctly identified the inner function. Now, remember the chain rule: If $f(x) = (g(x))^2$, then $f'(x) = 2g(x) \cdot g'(x)$."
+      </div>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <a class="btn small" href="/practice">Resume Socratic Session</a>
+      <a class="btn small ghost" href="/study-guides">Study Guides</a>
+    </div>
   </div>
 </div>
-<div class="grid g4" style="margin-top:16px">
-  <div class="card"><div class="feature"><span class="ic">💡</span><span><b>Step-by-Step Hints</b><br><small class="muted">Get guided help, not the answer.</small></span></div></div>
-  <div class="card"><div class="feature"><span class="ic">🎯</span><span><b>Instant Feedback</b><br><small class="muted">Know what to improve.</small></span></div></div>
-  <div class="card"><div class="feature"><span class="ic">📊</span><span><b>Track Progress</b><br><small class="muted">See your growth over time.</small></span></div></div>
-  <div class="card"><div class="feature"><span class="ic">⭐</span><span><b>Build Confidence</b><br><small class="muted">One problem at a time.</small></span></div></div>
+
+<div class="grid g4" style="margin-top:20px;">
+  <div class="card"><div class="feature"><span class="ic">💡</span><span><b>Socratic Hints</b><br><small class="muted">Guided inquiry, not answers.</small></span></div></div>
+  <div class="card"><div class="feature"><span class="ic">🎯</span><span><b>SymPy Verified</b><br><small class="muted">Algebraic checks without hallucination.</small></span></div></div>
+  <div class="card"><div class="feature"><span class="ic">📊</span><span><b>Real Progress</b><br><small class="muted">Evidence-backed learning insights.</small></span></div></div>
+  <div class="card"><div class="feature"><span class="ic">👩‍🏫</span><span><b>Instructor Aligned</b><br><small class="muted">Curated course policies & notes.</small></span></div></div>
 </div>
-<div class="grid g2" style="margin-top:16px">
-  <div class="card"><h3>📚 Courses</h3>{% for c in courses %}<p>📘 {{ c.title }} <small class="muted">· {{ c.topic }}</small></p>{% endfor %}</div>
-  <div class="card"><h3>🧑‍🎓 Classmates (synthetic)</h3>{% for s in students %}<p>👤 {{ s.name }}</p>{% endfor %}</div>
+
+<div class="grid g2" style="margin-top:20px;">
+  <div class="card">
+    <h3>📚 Active Enrolled Courses</h3>
+    {% for c in courses %}
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--border);">
+      <div>
+        <strong>{{ c.title }}</strong>
+        <div class="muted" style="font-size:12px;">Northbridge University · {{ c.topic }}</div>
+      </div>
+      <a href="/courses" class="btn small ghost">View Content</a>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="card">
+    <h3>📝 Practice Modules</h3>
+    {% for a in activities[:4] %}
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--border);">
+      <div>
+        <strong>{{ a.title }}</strong>
+        <div class="muted" style="font-size:12px;">{{ a.course_topic }}</div>
+      </div>
+      <a href="/activity/{{ a.id }}" class="btn small ghost">Solve</a>
+    </div>
+    {% endfor %}
+  </div>
 </div>
 {% endblock %}

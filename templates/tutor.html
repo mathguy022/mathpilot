@@ -1,0 +1,50 @@
+{% extends "base.html" %}{% set nav='tutor' %}
+{% block title %}AI Socratic Math Tutor{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="breadcrumb">Support / AI Math Tutor</div>
+  <h1>AI Socratic Math Tutor</h1>
+  <p class="subtitle">Guided mathematical reasoning powered by NVIDIA Nemotron & SymPy algebraic checking.</p>
+</div>
+
+<div class="grid g2" style="margin-top:20px;">
+  <div class="card">
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+      <div style="width:40px; height:40px; border-radius:50%; background:var(--purple-soft); color:var(--purple-primary); display:flex; align-items:center; justify-content:center; font-size:22px;">🤖</div>
+      <div>
+        <h3 style="margin:0;">Socratic Tutor Principles</h3>
+        <p class="muted" style="margin:0; font-size:13px;">A hint, not the answer</p>
+      </div>
+    </div>
+    <ul style="line-height:1.8; color:var(--navy); font-size:14px;">
+      <li><strong>Targeted Inquiries:</strong> MathPilot asks purposeful questions to help you uncover the underlying calculus concepts yourself.</li>
+      <li><strong>Deterministic Verification:</strong> Intermediate algebraic and derivative steps are verified with SymPy to ensure reliable, hallucination-free feedback.</li>
+      <li><strong>Progressive Hinting:</strong> Hints increase from conceptual cues to specific formulas, respecting instructor-configured assistance policies.</li>
+    </ul>
+    <div style="margin-top:20px;">
+      <a href="/practice" class="btn">Launch Practice with Tutor →</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Quick Diagnostic Topics</h3>
+    <p class="muted">Select a topic to launch guided Socratic problem solving:</p>
+    <div style="display:flex; flex-direction:column; gap:12px; margin-top:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 14px; border:1px solid var(--border); border-radius:10px;">
+        <div>
+          <strong>Chain Rule: Composite Powers</strong>
+          <div class="muted" style="font-size:13px;">f(x) = (3x + 1)², inner function & derivative</div>
+        </div>
+        <a href="/practice" class="btn small">Practice</a>
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 14px; border:1px solid var(--border); border-radius:10px;">
+        <div>
+          <strong>Related Rates: Conical Tank</strong>
+          <div class="muted" style="font-size:13px;">Volume formula, substitution, time differentiation</div>
+        </div>
+        <a href="/activity/1" class="btn small ghost">Practice</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
