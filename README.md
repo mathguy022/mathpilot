@@ -1,191 +1,182 @@
 # MathPilot
 
-### AI Teaching Assistant and Learning Intelligence Platform for Mathematics Departments
+**An AI-powered mathematics teaching and learning platform**
 
-MathPilot is an early-stage educational technology project exploring how AI can help students **learn to reason through mathematics**, help instructors spend less time repeating routine explanations, and provide useful evidence about where students are struggling.
+MathPilot connects instructor-created lessons and assignments with a focused student learning experience. Instructors publish and assign materials; students study, practice with a guided AI tutor, and submit their work. The goal is a reliable, end-to-end learning workflow—not a general-purpose chatbot.
 
-> **Our guiding principle:** Don't simply give students an answer when we can help them learn how to find it.
+> **Project scope:** This README describes the simplified MathPilot MVP workflow and intended functionality. It is a product specification, not a claim that every student feature has already been implemented.
 
-## The Problem
+## The MVP workflow
 
-Students can already ask general-purpose AI tools to solve homework problems. But receiving a finished answer is not the same as understanding the mathematics behind it.
+```mermaid
+flowchart TD
+    A[Instructor creates lesson] --> B[Instructor creates assignment]
+    B --> C[Publish and assign to student or class]
+    C --> D[Student Dashboard: assigned work]
+    D --> E[Read assigned lesson]
+    E --> F[Practice with AI Tutor]
+    F --> G[Complete graded assignment]
+    G --> H[Save answers and submit]
+    H --> I[Instructor reviews submission and feedback]
+```
 
-At the same time, mathematics instructors and tutors often answer the same questions repeatedly across large classes. That leaves less time for deeper teaching, individual intervention, and helping students build durable problem-solving skills.
+### 1. Instructor creates and assigns
 
-Departments also need a clearer picture of *which concepts students are struggling with*—not just whether a final answer was correct.
+From the existing **Instructor Dashboard / Builder**, the instructor:
 
-MathPilot is being designed to address these challenges without replacing instructors or treating mathematics learning as a simple answer-generation task.
+1. Selects a course and topic.
+2. Generates or edits a lesson with objectives, explanations, examples, and practice material.
+3. Generates or edits an assignment with a chosen number and difficulty of questions.
+4. Saves drafts, reviews content, and publishes approved materials.
+5. Assigns the lesson and assignment to a student or class.
 
-## The MathPilot Approach
+The current instructor creation, saved-drafts, publishing, and assignment flows should be **preserved and reused**, not rebuilt.
 
-MathPilot is envisioned as an instructor-guided learning platform that connects course materials, step-by-step tutoring, mathematical verification, and evidence-based teaching insights.
+### 2. Student opens assigned work
 
-### 1. Socratic, Step-by-Step Tutoring
+The **Student Dashboard** displays only materials assigned to the authenticated student or their enrolled class:
 
-Instead of immediately revealing a solution, MathPilot is designed to guide students through a problem using purposeful questions and progressive hints.
+- **My Lessons:** published lessons available to read.
+- **Practice with AI Tutor:** ungraded questions connected to the lesson's topic and objectives.
+- **My Assignments:** graded work with due dates (when set), progress, and submission status.
 
-A typical interaction might:
+The dashboard may also summarize assigned lessons, pending assignments, and completed submissions. It should show clear empty states when no work is available.
 
-1. Ask the student to identify a relevant formula or concept from the course materials.
-2. Ask for the next mathematical step.
-3. Review the student's response and reasoning.
-4. Identify the earliest incorrect or incomplete step where possible.
-5. Offer a targeted hint that helps the student correct their own work.
-6. Help the student demonstrate understanding before moving forward.
+### 3. Student studies the lesson
 
-The goal is to encourage mathematical thinking and independent problem-solving—not to withhold help indefinitely. Instructors should be able to configure the level of assistance allowed for an assignment, including when worked solutions may be shown for practice or review.
+The student opens a lesson to view its instructor-approved objectives, explanations, mathematical notation, worked examples, and exercises. A **Practice This Topic** action opens practice associated with that lesson. Student viewing must not modify the instructor's source lesson.
 
-### 2. Instructor-Controlled Assignments
+### 4. Student practices with the AI Tutor
 
-MathPilot is intended to let instructors define how students should work through an assignment. Planned controls may include:
+Practice is the distinctive MathPilot learning experience. Use a simple two-panel workspace:
 
-- Learning objectives and expected reasoning steps.
-- Accepted mathematical methods and equivalent answers.
-- Common errors or misconceptions to watch for.
-- Hint and solution-reveal policies.
-- Rules for checking intermediate work.
-- Course-specific notation and references to instructor-provided materials.
+| Mathematics workspace | AI Tutor |
+| --- | --- |
+| Current practice question | Context-aware guided conversation |
+| Math expression input | Get Hint |
+| Check Step | Explain This Step |
+| Question progress / Next Question | Ask a follow-up question |
 
-These controls are important because mathematical problems can have multiple valid solution paths. The system should support instructor intent rather than impose a single rigid method.
+The tutor uses a **Socratic-first approach**: ask a guiding question, encourage the next step, give progressive hints, explain errors, and avoid immediately revealing final answers. It should use the current problem, lesson objectives, student input, and relevant recent context. Math expressions must render clearly using existing LaTeX/KaTeX support and, where available, MathLive input.
 
-### 3. Mathematical Verification
+Practice is **ungraded** and can allow retries. Prefer existing lesson practice questions; otherwise reuse the existing question-generation service to produce separate practice questions. Do not expose restricted graded assignment answers through practice.
 
-Language models can produce convincing explanations that contain mathematical errors. MathPilot is being designed around a separation of responsibilities: AI can guide and explain, while dedicated mathematical tools—such as SymPy where appropriate—can verify supported calculations and symbolic expressions.
+### 5. Student completes and submits the assignment
 
-Not every mathematical response can be checked automatically. When a result or interpretation cannot be verified reliably, the system should acknowledge that limitation rather than present uncertainty as fact.
+The **Assignment Workspace** loads the exact assignment published by the instructor. The student can:
 
-### 4. Instructor Dashboard and Learning Insights
+1. Read each question and enter an answer using math-friendly input.
+2. Navigate between questions.
+3. Save progress and return later without losing answers.
+4. Review answers and confirm final submission.
+5. See a successful submission receipt and current status.
 
-MathPilot is intended to provide instructors with an actionable view of how students are engaging with assigned material and where misconceptions may be recurring.
+If no verified grade is available, display **Submitted — Awaiting Review** rather than inventing a score. Apply existing instructor attempt limits and tutoring permissions. The full tutor belongs in **Practice**; graded assignment assistance must respect instructor controls.
 
-A future dashboard could highlight:
+### 6. Instructor reviews results
 
-- Concepts where students frequently make similar errors.
-- Steps in a solution where students commonly get stuck.
-- Patterns in hint requests and successful corrections.
-- Topics that may benefit from a short review or targeted practice.
-- Suggested warm-up questions or follow-up activities.
+Submitted work is persisted and linked to the student, course, and assigned activity. The instructor can review the submission using existing instructor functionality or a minimal submission-view extension, provide feedback, and use observed difficulties to improve future lessons and assignments.
 
-For example, in a related-rates assignment, the system might detect a pattern of students differentiating an expression such as \(r^2\) with respect to time but omitting the chain-rule factor \(dr/dt\). It could recommend a short review and a few targeted practice questions.
+## Student navigation
 
-Any such insight must be grounded in actual student work, show appropriate context and denominators, and communicate uncertainty. Instructor-facing analytics should distinguish observed errors from AI-generated interpretations and respect institutional privacy and access policies.
+Keep the student experience small and consistent with the existing MathPilot interface:
 
-## Intended Users
+1. **My Dashboard** — overview of assigned work and status.
+2. **My Lessons** — read instructor-approved lessons.
+3. **Practice with AI Tutor** — solve ungraded problems with guided help.
+4. **My Assignments** — complete, save, and submit graded work.
 
-- **Students:** Receive guided practice that helps them develop mathematical reasoning and solve problems more independently.
-- **Instructors:** Configure learning activities, guide the tutoring experience, and identify recurring difficulties across their classes.
-- **Tutors and learning-support teams:** Potentially use course-aligned information to focus support on concepts a student needs to practice.
-- **Mathematics departments and institutions:** Potentially gain aggregated, actionable insight into learning challenges across courses, subject to appropriate permissions and privacy safeguards.
+Use the existing white/light-gray interface, purple accents, rounded cards, course selector, profile controls, and Student/Instructor view switch. On desktop, show practice and tutor side by side; stack them on mobile.
 
-## Initial MVP Direction
+## Core design principles
 
-The first prototype is intended to demonstrate one complete learning cycle rather than attempt to build an entire learning-management or homework platform at once.
+- **Instructor-led:** the instructor owns lesson content, assignment content, publication, and assignment decisions.
+- **Learning over answer-giving:** the tutor guides reasoning instead of acting as an answer dispenser.
+- **Practice is separate from assessment:** unlimited guided practice must not bypass graded-assignment rules.
+- **Real data:** assigned materials, saved answers, and submissions must come from persistent application data, not mock cards.
+- **Reuse first:** preserve the current instructor builder, authentication, AI configuration, math rendering, and data services.
+- **Simple and functional:** working buttons, clear loading/error states, and a complete workflow take priority over extra features.
 
-1. **Instructor workflow:** Create a mathematics assignment with learning objectives, expected steps, and a configurable tutoring policy.
-2. **Student workflow:** Work through a calculus problem in a Socratic interaction, responding to one meaningful question at a time.
-3. **Verification:** Check supported mathematical steps using deterministic tools where feasible.
-4. **Instructor insight:** Review an evidence-backed summary of recurring errors from a controlled set of test attempts.
+## Data and integration expectations
 
-The first demonstration may use synthetic student attempts. A real deployment involving student information would require appropriate security, privacy, accessibility, and institutional review.
+The MVP should use the existing project's equivalent data structures and APIs. Conceptually, it needs:
 
-## Proposed Technology Direction
+```text
+Student --enrolled in--> Course
+Instructor --publishes--> Lesson / Assignment
+Lesson / Assignment --assigned to--> Student or Class
+Student --starts--> Assignment Attempt
+Assignment Attempt --contains--> Saved Answers
+Assignment Attempt --becomes--> Submission
+Submission --reviewed by--> Instructor
+```
 
-The following technologies are under consideration. The architecture has **not yet been finalized**, and the stack may change as requirements and prototype tests clarify what is needed.
+Requirements:
 
-| Area | Candidate |
-|---|---|
-| Development workflow | OpenAI Codex and GitHub |
-| Frontend | Next.js, React, TypeScript |
-| Backend | Python and FastAPI |
-| AI inference | Nebius Token Factory with an eligible NVIDIA Nemotron model |
-| Mathematical verification | SymPy, where appropriate |
-| Mathematical input | MathLive |
-| Equation rendering | KaTeX |
-| Database | PostgreSQL |
-| Course-material retrieval | Document extraction and retrieval, with the specific design to be decided |
+- Authenticate users and authorize student/instructor actions server-side.
+- Show students only content assigned to them or their class.
+- Keep published source materials separate from student answers.
+- Persist in-progress answers and final submissions.
+- Enforce attempt limits and existing instructor tutor permissions.
+- Reuse the existing AI provider through server-side calls; never expose API credentials to clients.
+- Reuse mathematical verification when available; do not label uncertain AI output as independently verified.
 
-The design principle is to use AI where language understanding and tutoring are needed, and purpose-built software for calculations and other tasks that can be checked deterministically.
+## MVP scope
 
-## Development Status
+| Included in the MVP | Deferred |
+| --- | --- |
+| Assigned-work dashboard | Advanced analytics dashboards |
+| Lesson reading | Personalized learning paths |
+| Practice with guided AI Tutor | Voice tutoring |
+| Math-friendly answer input | Gamification and badges |
+| Assignment save/resume/submit | Real-time instructor chat |
+| Submission status and instructor access | Complex multi-agent tutoring |
+| Responsive UI and authorization | Automated mastery modeling |
 
-**Status: Working FastAPI MVP implemented (demo mode default).**
+## Implementation priorities
 
-What is live now (verified with 15 passing tests + HTTP smoke tests):
+1. **Connect assigned content:** verify the existing instructor publishing/assignment flow and display its real records to students.
+2. **Lesson reader:** reuse the existing lesson renderer and add a Practice This Topic action.
+3. **Practice + Tutor:** build a compact math workspace with context-aware Socratic hints and conversation.
+4. **Assignment submission:** implement persistent attempts, question navigation, save/resume, and submit.
+5. **End-to-end testing:** confirm instructor → student → instructor data flow and role permissions.
 
-- **Student workspace** (`/`, `/activity/{id}`): problem display, step selector,
-  math input, Submit / Get a Hint / Check My Work / Show Steps — all functional.
-- **Socratic tutor** (`app/tutor.py`): step orchestration, 4 hint levels, reveal
-  policy enforced in code. Demo replies are rule-based and labeled until a key is set.
-- **Math verification** (`app/verifier.py`): SymPy algebraic-equivalence checks,
-  numeric fallback, safe parsing (bounded length, allowlist, no code execution).
-- **Two-stage Nebius pipeline** (`app/nebius.py`): Qwen judges the step, Nemotron
-  crafts the Socratic reply from that verdict. Server-side only, OpenAI-compatible
-  `/chat/completions` endpoint. Model IDs configurable via env.
-- **Instructor dashboard** (`/instructor`): attempt/hint counts, correct rate,
-  observed per-step error rates from `/api/analytics` — computed from stored
-  records, never invented.
-- **Assignments** (`/assignments`, `/assignments/new`, `/edit`): full CRUD editor;
-  saving immediately changes the student experience.
-- **Materials** (`/materials`), **Progress** (`/progress`), **Courses** (`/courses`),
-  **Settings** (`/settings`): all functional; settings shows live/demo AI state.
+## MVP acceptance checklist
+
+- [ ] An instructor can publish and assign a lesson and assignment using the existing builder.
+- [ ] The assigned student sees the correct lesson and assignment after signing in.
+- [ ] The student can read the lesson with correctly rendered mathematics.
+- [ ] **Practice This Topic** opens relevant, ungraded questions.
+- [ ] The AI Tutor responds to the current problem with step-by-step guidance and progressive hints.
+- [ ] The student can enter mathematical expressions.
+- [ ] The student can start an assignment, save answers, leave, and resume.
+- [ ] The student can submit once, subject to configured attempt rules.
+- [ ] The submission is stored and accessible to the instructor.
+- [ ] No student can access another student's private attempts or submissions.
+- [ ] Existing instructor functionality continues to work.
+- [ ] All visible actions, empty states, and error states behave correctly.
+
+## Definition of success
+
+**MathPilot MVP is successful when an instructor assigns a lesson and an assignment; the student reads the lesson, practices with the AI Tutor, completes and submits the assignment; and the instructor can review the submitted work.**
+
+## Implementation status (working code)
+
+Student Workspace MVP is implemented and tested (97 tests passing):
+
+- **Student dashboard** (`/`): real assigned-lesson/assignment cards with counts and statuses.
+- **My Lessons** (`/lessons` → `/learn/{link}`): instructor-approved content, objectives, worked examples, "Practice This Topic" button.
+- **Practice with AI Tutor** (`/practice`): package picker, MathLive input, two-panel workspace with Socratic feedback via the Nebius pipeline.
+- **My Assignments** (`/assignments` → `/myassignments/{link}`): question navigation, save-progress with resume, final submit with confirmation; solutions never leak to student endpoints.
 
 ### Run it
 
 ```bash
 py -m pip install -r requirements.txt
 py -m pytest tests/ -q
-DEMO_MODE=true py -m uvicorn app.main:app --reload   # demo mode, no key needed
+py -m uvicorn app.main:app --reload   # reads .env (gitignored) for NEBIUS_API_KEY, DEMO_MODE
 ```
 
-### Go live with Nebius
+Env vars: `NEBIUS_API_KEY`, `NEBIUS_MATH_MODEL`, `NEBIUS_SOCRATIC_MODEL`, `NEBIUS_BASE_URL`, `DATABASE_URL` (default SQLite `./mathpilot.db`), `DEMO_MODE`.
 
-```bash
-cp .env.example .env   # then edit: NEBIUS_API_KEY, DEMO_MODE=false
-py -m uvicorn app.main:app --reload
-```
-
-Env vars: `NEBIUS_API_KEY`, `NEBIUS_MATH_MODEL` (default
-`Qwen/Qwen3.5-122B-A10B-FP8`), `NEBIUS_SOCRATIC_MODEL` (default
-`nvidia/nemotron-3-nano-30b-a3b`), `NEBIUS_BASE_URL`,
-`DATABASE_URL` (default SQLite `./mathpilot.db`), `DEMO_MODE`.
-
-### Known limitations / next phases
-
-- Demo role is fixed (Alex Johnson, student); no real auth — labeled demo only.
-- SQLite default; PostgreSQL is a future swap via `DATABASE_URL`.
-- File upload / document extraction for materials is a curated note workflow for now.
-- Verify the exact Nebius model IDs against the Token Factory catalog before the
-  hackathon demo; they are env-configurable without code changes.
-
-The project is currently defining its requirements, tutoring policies, technical architecture, and initial prototype scope. The repository is being organized before application code is introduced.
-
-### Current priorities
-
-- Clarify the product requirements and boundaries of the MVP.
-- Document the technical architecture and development rules.
-- Define how assignments specify acceptable steps, methods, and assistance.
-- Design a reliable process for checking student work and producing instructor insights.
-- Build and test the first end-to-end Socratic learning loop.
-- Explore a future Canvas integration without making the initial prototype dependent on a full LMS integration.
-
-Features described as planned or envisioned are goals, not statements that those features are already available.
-
-## Product Principles
-
-1. **Teach reasoning, not just answers.**
-2. **Support instructors; do not replace them.**
-3. **Keep instructors in control of assignment and assistance policies.**
-4. **Verify mathematics wherever practical.**
-5. **Make learning insights evidence-based and transparent about uncertainty.**
-6. **Protect student information and use appropriate permissions.**
-7. **Build incrementally, testing each core workflow before expanding scope.**
-
-## Contributing and Project Status
-
-MathPilot is in its early planning stage. The project documentation will be developed before major application implementation begins. As the architecture is approved and a working prototype is created, this README will be updated to reflect the actual implementation, setup instructions, tests, and contribution process.
-
-Until then, please treat the technology choices and feature descriptions above as proposed direction rather than a production-ready system.
-
----
-
-**Repository:** https://github.com/mathguy022/mathpilot
+That complete loop is the immediate development priority. More advanced teaching analytics and personalization can follow after it works reliably.
