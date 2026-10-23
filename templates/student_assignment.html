@@ -1,0 +1,69 @@
+{% extends "base.html" %}{% set active_nav='assignments' %}
+{% block title %}{{ title }} — My Assignment{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="/assignments">My Assignments</a> &nbsp;/&nbsp; <span>{{ title }}</span></div>
+<h1 class="page-title">{{ title }}</h1>
+<p class="page-subtitle">{% if course %}{{ course }} · {% endif %}{{ items|length }} question{{ '' if items|length == 1 else 's' }}{% if due %} · due {{ due }}{% endif %}</p>
+
+{% if submitted %}
+<div class="card" style="margin-top:16px; border-left:4px solid var(--green);">
+  <h3>✅ Assignment Submitted Successfully!</h3>
+  <p class="muted">Submitted {{ submitted_at }}. Status: <b>Submitted — Awaiting Review</b>. Your instructor will review your work; scores and feedback appear here when available.</p>
+  <div class="row" style="margin-top:10px">
+    <a class="btn ghost" href="/assignments">← Back to My Assignments</a>
+    <a class="btn ghost" href="/">Dashboard →</a>
+  </div>
+</div>
+{% else %}
+<div class="card" style="margin-top:16px;">
+  <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+    <label for="q-nav"><b>Question</b></label>
+    <select id="q-nav" onchange="showQ(parseInt(this.value))" style="border:1px solid #cbd5e1; border-radius:10px; padding:7px 10px;">
+      {% for q in items %}<option value="{{ loop.index0 }}">Q{{ loop.index }} of {{ items|length }}</option>{% endfor %}
+    </select>
+    <span class="muted" id="save-state" style="margin-left:auto; font-size:12.5px;"></span>
+  </div>
+</div>
+
+{% for q in items %}
+<div class="card q-pane" id="q-{{ loop.index0 }}" style="margin-top:12px; {% if not loop.first %}display:none{% endif %}">
+  <h3>Q{{ loop.index }} <small class="muted">· difficulty {{ q.difficulty }}</small></h3>
+  <p style="font-size:16px;">${{ q.prompt_latex }}$</p>
+  {% for s in q.steps %}<p class="muted"><small>Step {{ loop.index }}: {{ s.description }}</small></p>{% endfor %}
+  <label for="ans-{{ loop.index0 }}"><b>Your answer</b></label>
+  <math-field id="ans-{{ loop.index0 }}" data-item="{{ q.item_id }}" aria-label="Answer for question {{ loop.index }}"></math-field>
+  <div class="row" style="margin-top:10px;">
+    {% if not loop.first %}<button type="button" class="btn small ghost" onclick="showQ({{ loop.index0 - 1 }})">← Prev</button>{% endif %}
+    {% if not loop.last %}<button type="button" class="btn small ghost" onclick="showQ({{ loop.index0 + 1 }})">Next →</button>{% endif %}
+  </div>
+</div>
+{% endfor %}
+{% if not items %}
+<div class="card empty-state" style="margin-top:12px"><p class="muted">This assignment has no questions.</p></div>
+{% endif %}
+
+<div class="row" style="margin-top:16px;">
+  <button type="button" class="btn ghost" id="save-btn" onclick="saveProgress()">💾 Save Progress</button>
+  <button type="button" class="btn" id="submit-btn" onclick="submitAsg()">Submit Assignment</button>
+  <a class="btn ghost" href="/assignments">← Back to My Assignments</a>
+</div>
+{% endif %}
+<script>
+const LINK_ID="{{ publication.link_id }}", NQ={{ items|length }};
+const SAVED={{ saved|tojson }};
+function collect(){ const a={}; document.querySelectorAll('math-field[data-item]').forEach(m=>{ let v=''; try{ v=m.getValue('latex')||m.value||''; }catch(e){ v=m.value||''; } a[m.dataset.item]=(v||'').trim(); }); return a; }
+function restore(){ document.querySelectorAll('math-field[data-item]').forEach(m=>{ const v=SAVED[m.dataset.item]; if(v){ try{m.setValue(v);}catch(e){} } }); }
+function showQ(i){ document.querySelectorAll('.q-pane').forEach((p,j)=>{ p.style.display=(j===i)?'block':'none'; }); document.getElementById('q-nav').value=i; if(window.renderMath) window.renderMath(document.getElementById('q-'+i)); }
+function setState(t){ document.getElementById('save-state').textContent=t; }
+async function saveProgress(){ const b=document.getElementById('save-btn'); b.disabled=true; setState('Saving…');
+ try{ const r=await fetch('/api/assignments/progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_id:LINK_ID,answers:collect()})});
+  const j=await r.json(); if(!r.ok){ setState('Error: '+(j.detail||'failed')); b.disabled=false; return; }
+  setState('Progress saved ✔'); }catch(e){ setState('Request failed.'); } b.disabled=false; }
+async function submitAsg(){ if(!confirm('Submit this assignment? You cannot change answers after submitting.')) return;
+ const b=document.getElementById('submit-btn'); b.disabled=true; setState('Submitting…');
+ try{ const r=await fetch('/api/assignments/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_id:LINK_ID,answers:collect()})});
+  const j=await r.json(); if(!r.ok){ setState('Error: '+(j.detail||'failed')); b.disabled=false; return; }
+  location.reload(); }catch(e){ setState('Request failed.'); b.disabled=false; } }
+window.addEventListener('load', ()=>{ restore(); if(window.renderMath) window.renderMath(document.body); });
+</script>
+{% endblock %}

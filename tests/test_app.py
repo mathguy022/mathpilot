@@ -101,17 +101,25 @@ def test_analytics_reflects_records(cone_activity):
 
 
 def test_assignments_tab_lists_assigned_packages():
-    # Assigned packages appear with course, due date, and student link.
-    # (The shared dev database may already hold assignments; this test
-    # asserts the newly assigned package renders, not an empty state.)
-    s = client.post("/api/lessons/save", json={
-        "topic": "Limits", "lesson": dict(PLAN_LESSON, title="Tab lesson"),
-        "settings": {}})
-    lid = s.json()["id"]
-    client.post(f"/api/lessons/{lid}/approve",
-                json={"lesson": dict(PLAN_LESSON, title="Tab lesson")})
+    # Only assignment-carrying packages appear on the My Assignments tab
+    # (lesson-only packages live under My Lessons). The cards carry
+    # course, due date, status, and question count.
+    a_item = {
+        "item_id": "q1", "prompt_latex": "Solve $x+1=2$.",
+        "steps": [{"step_id": "s1", "description": "Subtract 1.",
+                   "expected_input_latex": "x=1",
+                   "accepted_equivalents": [], "hints": [],
+                   "objective_tags": []}],
+        "hints": [], "objective_tags": [], "difficulty": 1,
+        "verification": "needs-review",
+    }
+    s = client.post("/api/assignments/save", json={
+        "topic": "Algebra", "title": "Tab assignment",
+        "items": [a_item], "settings": {}})
+    aid = s.json()["id"]
+    client.post(f"/api/assignments/{aid}/approve", json={})
     a = client.post("/api/assign", json={
-        "lesson_id": lid, "course": "Calculus 1", "due": "2026-12-01"})
+        "assignment_id": aid, "course": "Calculus 1", "due": "2026-12-01"})
     assert a.status_code == 200
     link = a.json()["link_id"]
     r2 = client.get("/assignments")
@@ -119,6 +127,20 @@ def test_assignments_tab_lists_assigned_packages():
     assert link in r2.text
     assert "Calculus 1" in r2.text
     assert "2026-12-01" in r2.text
+    # A lesson-only package must NOT appear here (it lives on My Lessons).
+    s = client.post("/api/lessons/save", json={
+        "topic": "Limits", "lesson": dict(PLAN_LESSON, title="Tab lesson"),
+        "settings": {}})
+    lid = s.json()["id"]
+    client.post(f"/api/lessons/{lid}/approve",
+                json={"lesson": dict(PLAN_LESSON, title="Tab lesson")})
+    la = client.post("/api/assign", json={
+        "lesson_id": lid, "course": "Calculus 1", "due": "2026-12-01"})
+    assert la.status_code == 200
+    r3 = client.get("/assignments")
+    assert la.json()["link_id"] not in r3.text
+    r4 = client.get("/lessons")
+    assert la.json()["link_id"] in r4.text
 
 
 def test_no_key_in_client_bundle(cone_activity):

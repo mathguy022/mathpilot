@@ -92,8 +92,10 @@ def test_assignment_save_approve_publish():
     assert ap.status_code == 200
     p = client.post("/api/publications", json={"assignment_id": aid})
     assert p.status_code == 200, p.text
-    page = client.get(f"/learn/{p.json()['link_id']}")
-    assert page.status_code == 200
+    page = client.get(f"/learn/{p.json()['link_id']}", follow_redirects=False)
+    assert page.status_code == 303
+    assert page.headers["location"].endswith(
+        f"/myassignments/{p.json()['link_id']}")
     # Solutions never reach the student page.
     assert "solution_steps" not in page.text
 

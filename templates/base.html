@@ -58,12 +58,10 @@
         <a href="/materials" class="top-nav-item {% if nav=='materials' %}active{% endif %}">Materials</a>
         <a href="/settings" class="top-nav-item {% if nav=='settings' %}active{% endif %}">Settings</a>
       {% else %}
-        <a href="/practice" class="top-nav-item {% if active_nav=='dashboard' or nav=='home' or not nav %}active{% endif %}">Dashboard</a>
-        <a href="/courses" class="top-nav-item {% if active_nav=='courses' or nav=='courses' %}active{% endif %}">My Courses</a>
-        <a href="/lessons" class="top-nav-item {% if active_nav=='lessons' or nav=='lessons' %}active{% endif %}">Lessons</a>
-        <a href="/assignments" class="top-nav-item {% if active_nav=='assignments' or nav=='practice' %}active{% endif %}">Assignments</a>
-        <a href="/tutor" class="top-nav-item {% if active_nav=='tutor' or nav=='tutor' %}active{% endif %}">Tutor</a>
-        <a href="/progress" class="top-nav-item {% if active_nav=='progress' or nav=='progress' %}active{% endif %}">Progress</a>
+        <a href="/" class="top-nav-item {% if active_nav=='dashboard' or nav=='home' or not nav %}active{% endif %}">My Dashboard</a>
+        <a href="/lessons" class="top-nav-item {% if active_nav=='lessons' or nav=='lessons' %}active{% endif %}">My Lessons</a>
+        <a href="/practice" class="top-nav-item">Practice with AI Tutor</a>
+        <a href="/assignments" class="top-nav-item {% if active_nav=='assignments' or nav=='practice' %}active{% endif %}">My Assignments</a>
       {% endif %}
     </nav>
   </div>
@@ -144,39 +142,24 @@
     {% else %}
     <!-- Student Sidebar Navigation -->
     <nav class="side-nav">
-      <a href="/practice" class="side-nav-item {% if active_nav=='dashboard' or nav=='home' or not nav %}active{% endif %}">
+      <a href="/" class="side-nav-item {% if active_nav=='dashboard' or nav=='home' or not nav %}active{% endif %}">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
-        <span>Dashboard</span>
-      </a>
-
-      <a href="/courses" class="side-nav-item {% if active_nav=='courses' or nav=='courses' %}active{% endif %}">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
-        <span>My Courses</span>
+        <span>My Dashboard</span>
       </a>
 
       <a href="/lessons" class="side-nav-item {% if active_nav=='lessons' or nav=='lessons' %}active{% endif %}">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-        <span>Lessons</span>
+        <span>My Lessons</span>
+      </a>
+
+      <a href="/practice" class="side-nav-item {% if nav=='tutor' %}active{% endif %}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
+        <span>Practice with AI Tutor</span>
       </a>
 
       <a href="/assignments" class="side-nav-item {% if active_nav=='assignments' or nav=='practice' %}active{% endif %}">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
-        <span>Assignments</span>
-      </a>
-
-      <a href="/tutor" class="side-nav-item {% if active_nav=='tutor' or nav=='tutor' %}active{% endif %}">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="11" width="18" height="10" rx="2"></rect><circle cx="12" cy="5" r="2"></circle><path d="M12 7v4"></path><line x1="8" y1="16" x2="8" y2="16"></line><line x1="16" y1="16" x2="16" y2="16"></line></svg>
-        <span>AI Tutor</span>
-      </a>
-
-      <a href="/progress" class="side-nav-item {% if active_nav=='progress' or nav=='progress' %}active{% endif %}">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
-        <span>My Progress</span>
-      </a>
-
-      <a href="/study-guides" class="side-nav-item {% if active_nav=='study-guides' or nav=='study-guides' %}active{% endif %}">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
-        <span>Study Guides</span>
+        <span>My Assignments</span>
       </a>
     </nav>
 

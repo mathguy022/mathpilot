@@ -220,6 +220,10 @@ MODE_TAGS: dict[str, str] = {
     "identity": "simplify", "prove identity": "simplify",
     "factor": "simplify", "factoring": "simplify",
     "expand": "simplify",
+    # functions & transcendental (verified via equivalence fallback)
+    "power function": "simplify", "power functions": "simplify",
+    "exponential": "simplify", "logarithm": "simplify",
+    "logarithms": "simplify",
 }
 
 # Fixed probe points for numeric confirmation (deterministic, no randomness).

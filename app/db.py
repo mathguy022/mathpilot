@@ -168,7 +168,7 @@ def ensure_schema():
     """Lightweight additive migration for existing SQLite databases.
 
     create_all covers fresh installs; ALTER TABLE covers databases created
-    before a column existed. Additive only — never drops or renames.
+    before a column/table existed. Additive only — never drops or renames.
     """
     with engine.begin() as conn:
         existing = {r[1] for r in conn.exec_driver_sql(
@@ -177,6 +177,17 @@ def ensure_schema():
             conn.exec_driver_sql(
                 f"ALTER TABLE {Publication.__tablename__} "
                 "ADD COLUMN assigned_course VARCHAR(200) DEFAULT ''")
+        # Submissions table for student assignment work (MVP).
+        conn.exec_driver_sql(
+            f"""CREATE TABLE IF NOT EXISTS {Submission.__tablename__} (
+                id INTEGER PRIMARY KEY,
+                publication_id INTEGER NOT NULL REFERENCES {Publication.__tablename__}(id),
+                user_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                answers_json TEXT DEFAULT '{{}}',
+                status VARCHAR(20) DEFAULT 'draft',
+                submitted_at DATETIME,
+                created_at DATETIME,
+                updated_at DATETIME)""")
 
 
 class ReviewRequest(Base):
@@ -187,6 +198,25 @@ class ReviewRequest(Base):
     status = Column(String(30), default="pending")  # pending|reviewed|in_progress
     notes = Column(Text, default="")
     created_at = Column(DateTime, default=utcnow)
+
+
+class Submission(Base):
+    """Student assignment submission: saved answers + final submit state.
+
+    One row per (publication link, student). answers_json maps item_id ->
+    the student's answer string. Status is draft|submitted; a submitted row
+    is final (no re-submit in the MVP).
+    """
+
+    __tablename__ = "submissions"
+    id = Column(Integer, primary_key=True)
+    publication_id = Column(Integer, ForeignKey("publications.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    answers_json = Column(Text, default="{}")
+    status = Column(String(20), default="draft")  # draft|submitted
+    submitted_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 def get_db():

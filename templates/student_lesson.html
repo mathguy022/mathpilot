@@ -1,17 +1,25 @@
-{% extends "base.html" %}{% set active_nav='practice' %}
-{% block title %}{{ publication.title }} — Learn{% endblock %}
+{% extends "base.html" %}{% set active_nav='lessons' %}
+{% block title %}{{ lesson.title or publication.title }} — My Lesson{% endblock %}
 {% block content %}
-<h1>{{ publication.title }}</h1>
-<p class="muted">{% if lesson.topic %}{{ lesson.topic }} · {% endif %}Interactive lesson · SymPy-checked practice</p>
+<div class="breadcrumb"><a href="/lessons">My Lessons</a> &nbsp;/&nbsp; <span>{{ lesson.title or publication.title }}</span></div>
+<h1 class="page-title">{{ lesson.title or publication.title }}</h1>
+<p class="page-subtitle">{% if lesson.topic %}{{ lesson.topic }} · {% endif %}Instructor-approved lesson{% if publication.due_date %} · due {{ publication.due_date }}{% endif %}</p>
+
+{% if lesson.objectives %}
+<div class="card"><h3>🎯 Learning Objectives</h3>
+<ul style="margin:8px 0 0 20px; line-height:1.8;">
+{% for o in lesson.objectives %}<li>{{ o }}</li>{% endfor %}
+</ul></div>
+{% endif %}
+
 {% if lesson.sections %}
-<div class="card"><h3>📖 {{ lesson.title }}</h3>
-{% if lesson.objectives %}<p class="muted"><b>Objectives:</b> {{ lesson.objectives|join('; ') }}</p>{% endif %}
+<div class="card" style="margin-top:16px"><h3>📖 Lesson Content</h3>
 {% for s in lesson.sections %}
 <div style="margin-top:14px"><h3>{{ s.heading }} <small class="muted">{{ s.kind|replace('_',' ') }}</small></h3>
 <div class="sec-preview">{{ s.body_markdown }}</div>
 {% for m in s.math_latex %}<p>${{ m }}$</p>{% endfor %}
 {% for e in s.examples|default([]) %}
-<details class="steps" style="margin-top:8px"><summary>Worked example</summary>
+<details class="steps" style="margin-top:8px"><summary>Worked example {{ loop.index }}</summary>
 <p><b>Problem:</b> ${{ e.problem_latex }}$</p><ol>
 {% for st in e.steps %}<li>${{ st.expression }}$<br><small class="muted">{{ st.why }}</small></li>{% endfor %}
 </ol><p><b>Answer:</b> ${{ e.final_answer_latex }}$</p></details>
@@ -20,28 +28,23 @@
 {% endfor %}
 </div>
 {% endif %}
+
 {% if lesson.guided_items %}
-<div class="card" style="margin-top:16px"><h3>✏️ Guided practice</h3>
-<p class="muted">Attempt each item — hints respond to your work, solutions release per instructor policy.</p>
+<div class="card" style="margin-top:16px"><h3>✏️ Check Your Understanding</h3>
+<p class="muted">Ungraded practice — try each item, then check the lesson content above. Full Socratic help is in the Practice workspace.</p>
 {% for g in lesson.guided_items %}
-<div style="margin-top:10px"><p><b>Item {{ loop.index }}</b> <small class="muted">{{ g.context }}</small><br>${{ g.prompt_latex }}$</p>
-<label for="guided-{{ loop.index }}">Your attempt (math only)</label>
-<math-field id="guided-{{ loop.index }}" aria-label="Attempt for guided item {{ loop.index }}"></math-field>
-<div id="guided-status-{{ loop.index }}" style="margin-top:6px"></div></div>
+<div style="margin-top:10px"><p><b>Item {{ loop.index }}</b> <small class="muted">{{ g.context }}</small><br>${{ g.prompt_latex }}$</p></div>
 {% endfor %}
 </div>
 {% endif %}
-{% if assignment_items %}
-<div class="card" style="margin-top:16px"><h3>📝 Assignment questions</h3>
-{% for q in assignment_items %}
-<div style="margin-top:10px"><p><b>Q{{ loop.index }}</b> ${{ q.prompt_latex }}$ <small class="muted">· difficulty {{ q.difficulty }}</small></p>
-{% for s in q.steps %}<p class="muted"><small>Step {{ loop.index }}: {{ s.description }}</small></p>{% endfor %}
+
+{% if not lesson.sections %}
+<div class="card empty-state" style="margin-top:16px"><p class="muted">This lesson has no readable content yet.</p></div>
+{% endif %}
+
+<div class="row" style="margin-top:18px">
+  <a class="btn ghost" href="/lessons">← Back to My Lessons</a>
+  {% if lesson.topic %}<a class="btn" href="/practice?topic={{ lesson.topic|urlencode }}">Practice This Topic →</a>{% endif %}
 </div>
-{% endfor %}
-<p class="muted"><small>Work these in the <a href="/assignments">Practice workspace</a> for step-level SymPy feedback.</small></p></div>
-{% endif %}
-{% if not lesson.sections and not assignment_items %}
-<div class="card empty-state"><p class="muted">This package has no student content yet.</p></div>
-{% endif %}
 <script>if(window.renderMath) window.addEventListener('load', ()=>window.renderMath(document.body));</script>
 {% endblock %}

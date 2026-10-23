@@ -24,7 +24,13 @@ GENERATE_SYSTEM = (
     "'prompt' (LaTeX string), 'answer' (LaTeX string of ONLY the final "
     "mathematical result, e.g. 'x=3' — never prose), 'objective' "
     "(short tag string), 'steps' (list of {description, expected} objects), "
-    "'difficulty' (integer 1-5). Rules for each step: 'description' is the "
+    "'difficulty' (integer 1-5). CRITICAL: every problem MUST be about the "
+    "Topic named in the user message — never substitute a different topic, "
+    "even if the course context lists other standard topics. If the topic "
+    "is unfamiliar, still write problems about exactly that topic using "
+    "standard textbook treatment. Use the topic name (or a close variant) "
+    "as the 'objective' tag when it is not in the taxonomy below. "
+    "Rules for each step: 'description' is the "
     "English instruction (e.g. 'Multiply both sides by the LCD'); "
     "'expected' is ONLY the resulting mathematical expression in LaTeX "
     "(e.g. 'x+3=7') — never English, never explanations, never multiple "
@@ -37,7 +43,8 @@ GENERATE_SYSTEM = (
     "LaTeX with $...$ for inline math and $$...$$ for display math. "
     "Use 'objective' from this taxonomy only: 'linear equation', "
     "'quadratic', 'rational equation', 'linear system', 'derivative', "
-    "'integral', 'limit', 'simplify'. Include it per step as well when "
+    "'integral', 'limit', 'simplify', 'power function', 'exponential', "
+    "'logarithm'. Include it per step as well when "
     "steps span sub-skills. "
     "For systems of equations, 'answer' must list EVERY variable "
     "(e.g. 'x=2, y=1'); for single equations list every solution "
@@ -179,10 +186,15 @@ def generate_questions(notes: str, topic: str, num_questions: int = 5,
     for line in (bounded.splitlines()[:2] if bounded else []):
         if line.lower().startswith("course:"):
             course_label = line.split(":", 1)[1].strip()
+    # Oversample: the verification gate discards failures, so request
+    # extra candidates up front (bounded by MAX_CANDIDATES).
+    ask = min(MAX_CANDIDATES, n + (n + 1) // 2)
     user_prompt = (
         f"Topic: {topic}\nDifficulty (1-5): {difficulty}\n"
         f"{course_context(course_label or topic)}\n"
-        f"Generate {n} problems based on these notes:\n{bounded}"
+        f"Generate {ask} DIFFERENT problems about {topic} based on these "
+        f"notes:\n{bounded or '(no notes — use standard textbook problems '
+        f'about ' + topic + ')'}"
     )
     raw = nebius._chat(
         config.NEBIUS_MATH_MODEL,
@@ -202,29 +214,73 @@ def generate_questions(notes: str, topic: str, num_questions: int = 5,
     verified: list[dict] = []
     discard_reasons: list[str] = []
     debug_pairs: list[dict] = []
-    for i, candidate in enumerate(candidates[:n]):
+    seen_prompts: set[str] = set()
+
+    def _admit(candidates: list[dict], offset: int) -> None:
+        for j, candidate in enumerate(candidates):
+            if len(verified) >= n:
+                break
+            try:
+                question = candidate_to_question(candidate)
+            except Exception as exc:
+                discard_reasons.append(
+                    f"candidate {offset + j + 1}: mapping failed: {exc}")
+                continue
+            if question.prompt_latex in seen_prompts:
+                discard_reasons.append(
+                    f"candidate {offset + j + 1}: duplicate prompt skipped")
+                continue
+            ok, reasons = verify_question_canonical(question)
+            if ok:
+                question.is_verified = True
+                seen_prompts.add(question.prompt_latex)
+                verified.append(question.model_dump())
+            else:
+                discard_reasons.append(
+                    f"candidate {offset + j + 1}: verification failed: "
+                    f"{'; '.join(reasons)}"
+                )
+                if question.steps:
+                    debug_pairs.append({
+                        "candidate": offset + j + 1,
+                        "final_answer": question.final_answer_latex,
+                        "last_step": question.steps[-1].expected_input_latex,
+                    })
+
+    _admit(candidates, 0)
+    # Bounded top-up: one extra model call requesting twice the shortfall.
+    top_up_calls = 0
+    if len(verified) < n:
+        shortfall = n - len(verified)
+        top_up_prompt = (
+            f"Topic: {topic}\nDifficulty (1-5): {difficulty}\n"
+            f"{course_context(course_label or topic)}\n"
+            f"Generate {min(MAX_CANDIDATES, shortfall * 2)} MORE DIFFERENT "
+            f"problems about {topic} (do not repeat these prompts: "
+            f"{sorted(seen_prompts)[:n] or 'none yet'})."
+        )
         try:
-            question = candidate_to_question(candidate)
+            top_up_calls = 1
+            top_up_candidates = parse_candidates(nebius._chat(
+                config.NEBIUS_MATH_MODEL,
+                [{"role": "system", "content": GENERATE_SYSTEM},
+                 {"role": "user", "content": top_up_prompt}],
+                max_tokens=GEN_MAX_TOKENS,
+            ))
+            _admit(top_up_candidates, len(candidates))
         except Exception as exc:
-            discard_reasons.append(f"candidate {i + 1}: mapping failed: {exc}")
-            continue
-        ok, reasons = verify_question_canonical(question)
-        if ok:
-            question.is_verified = True
-            verified.append(question.model_dump())
-        else:
-            discard_reasons.append(
-                f"candidate {i + 1}: verification failed: {'; '.join(reasons)}"
-            )
-            if question.steps:
-                debug_pairs.append({
-                    "candidate": i + 1,
-                    "final_answer": question.final_answer_latex,
-                    "last_step": question.steps[-1].expected_input_latex,
-                })
-    return {"verified": verified,
-            "discarded": len(candidates[:n]) - len(verified),
+            discard_reasons.append(f"top-up round failed: {exc}")
+    shortfall = n - len(verified)
+    return {"verified": verified[:n],
+            "requested": n,
+            "delivered": len(verified[:n]),
+            "shortfall": shortfall,
+            "shortfall_reason": (
+                f"Only {len(verified)} of {n} candidates passed SymPy "
+                "verification; see discard_reasons." if shortfall else ""),
+            "discarded": len(candidates) - len(verified),
             "discard_reasons": discard_reasons,
             "truncated_notes": truncated,
+            "top_up_calls": top_up_calls,
             "raw_sample": raw[:2000],
             "debug_pairs": debug_pairs}

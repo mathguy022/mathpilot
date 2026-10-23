@@ -1,69 +1,31 @@
 {% extends "base.html" %}{% set nav='lessons' %}
-{% block title %}Course Lessons{% endblock %}
+{% block title %}My Lessons{% endblock %}
 {% block content %}
 <div class="page-header">
-  <div class="breadcrumb">Calculus I / Lessons</div>
-  <h1>Course Lessons</h1>
-  <p class="subtitle">Instructor-curated lectures, worked examples, and step-by-step reasoning modules.</p>
+  <div class="breadcrumb">Student Workspace / My Lessons</div>
+  <h1>My Lessons</h1>
+  <p class="subtitle">Lessons assigned by your instructor — read, review worked examples, then practice.</p>
 </div>
 
+{% if cards %}
 <div class="grid g2" style="margin-top:20px;">
+{% for c in cards %}
   <div class="card">
     <div style="display:flex; justify-content:space-between; align-items:flex-start;">
       <div>
-        <span class="badge ok">Active Unit</span>
-        <h3 style="margin:10px 0 6px;">Unit 2: Composite Functions & The Chain Rule</h3>
-        <p class="muted">Calculus I · Dr. Lee</p>
+        <span class="badge ok">{{ c.status }}</span>
+        <h3 style="margin:10px 0 6px; font-size:18px;">{{ c.title }}</h3>
+        <p class="muted">{% if c.course %}{{ c.course }} · {% endif %}{{ c.instructor }}</p>
       </div>
-      <a href="/practice" class="btn">Resume Practice →</a>
-    </div>
-    <p style="margin:12px 0; color:var(--navy); font-size:14px;">
-      Learn how to decompose composite functions $f(g(x))$, apply Leibniz and prime notation, and avoid common errors like forgetting the derivative of the inner function.
-    </p>
-    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
-      <span class="tag">§2.5 Chain Rule</span>
-      <span class="tag">Power Chain Rule</span>
-      <span class="tag">SymPy Verified</span>
+      <a href="/mylessons/{{ c.link_id }}" class="btn">View Lesson →</a>
     </div>
   </div>
-
-  <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-      <div>
-        <span class="badge ok">Upcoming</span>
-        <h3 style="margin:10px 0 6px;">Unit 3: Implicit Differentiation & Related Rates</h3>
-        <p class="muted">Calculus I · Dr. Sarah Wilson</p>
-      </div>
-      <a href="/activity/1" class="btn ghost">View Module →</a>
-    </div>
-    <p style="margin:12px 0; color:var(--navy); font-size:14px;">
-      Relate variables changing with respect to time using the chain rule. Practice with classic geometric problems including conical tanks and expanding spheres.
-    </p>
-    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
-      <span class="tag">§3.9 Related Rates</span>
-      <span class="tag">Geometric Models</span>
-    </div>
-  </div>
+{% endfor %}
 </div>
-
-{% if lessons %}
-<div class="card" style="margin-top:24px;">
-  <h3>Additional Published Lessons</h3>
-  <table class="table" style="margin-top:12px;">
-    <thead>
-      <tr><th>Topic</th><th>Title</th><th>Status</th><th>Action</th></tr>
-    </thead>
-    <tbody>
-      {% for les in lessons %}
-      <tr>
-        <td>{{ les.topic }}</td>
-        <td>{{ les.title }}</td>
-        <td><span class="badge ok">{{ les.status }}</span></td>
-        <td><a href="/practice" class="btn small ghost">Open Lesson</a></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+{% else %}
+<div class="card empty-state" style="margin-top:20px;">
+  <p style="font-size:18px;font-weight:700">No lessons assigned yet</p>
+  <p class="muted">Your instructor hasn't assigned any lessons. Check back after your next class.</p>
 </div>
 {% endif %}
 {% endblock %}

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from . import config
 from .db import (
     Assignment, ensure_schema, get_db, init_db, Activity, Attempt, Course, CourseMaterial,
-    HintRequest, Lesson, Mastery, Publication, ReviewRequest, User,
+    HintRequest, Lesson, Mastery, Publication, ReviewRequest, Submission, User,
 )
 from .seed import seed
 from .tutor import orchestrate
@@ -50,26 +50,211 @@ def hints_of(activity: Activity) -> list[str]:
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, db: Session = Depends(get_db)):
-    activities = db.query(Activity).all()
-    courses = db.query(Course).all()
-    students = db.query(User).filter(User.role == "student").all()
+    pubs = db.query(Publication).order_by(Publication.id.desc()).all()
+    lesson_cards, asg_cards = _student_cards(db, pubs)
+    completed = db.query(Submission).filter(
+        Submission.user_id == 1,
+        Submission.status == "submitted").count()
+    in_progress = db.query(Submission).filter(
+        Submission.user_id == 1,
+        Submission.status == "draft").count()
     return templates.TemplateResponse(request, "home.html", {
-        "request": request, "activities": activities, "courses": courses,
-        "students": students, "demo": not config.ai_configured(),
-        "math_model": config.NEBIUS_MATH_MODEL,
-        "socratic_model": config.NEBIUS_SOCRATIC_MODEL,
+        "request": request,
+        "lesson_cards": lesson_cards, "assignment_cards": asg_cards,
+        "n_lessons": len(lesson_cards), "n_pending": len(asg_cards),
+        "n_completed": completed, "n_in_progress": in_progress,
+        "demo": not config.ai_configured(),
     })
 
 
-@app.get("/practice")
-def practice_page(db: Session = Depends(get_db)):
-    chain_act = db.query(Activity).filter(Activity.title.like("%Chain rule%")).first()
-    if chain_act:
-        return RedirectResponse(f"/activity/{chain_act.id}", status_code=303)
-    first_act = db.query(Activity).first()
-    if first_act:
-        return RedirectResponse(f"/activity/{first_act.id}", status_code=303)
-    return RedirectResponse("/assignments", status_code=303)
+def _student_cards(db: Session, pubs: list) -> tuple[list, list]:
+    """Build lesson + assignment cards for the student workspace.
+
+    Shared by the dashboard and the My Lessons/My Assignments pages so all
+    three views show the same packages. Lessons list every publication
+    carrying a lesson; assignments list every publication carrying an
+    assignment with its question count, due date, and submission status.
+    """
+    import json as _json
+
+    lessons, assignments = [], []
+    for p in pubs:
+        if p.lesson_id:
+            lesson = db.get(Lesson, p.lesson_id)
+            lessons.append({
+                "link_id": p.link_id,
+                "title": (lesson.title if lesson else None) or p.title or "Untitled",
+                "course": p.assigned_course or "",
+                "instructor": "Dr. Lee",
+                "status": "Available",
+                "due": p.due_date or "",
+            })
+        if p.assignment_id:
+            asg = db.get(Assignment, p.assignment_id)
+            try:
+                items = _json.loads(asg.questions_json or "[]") if asg else []
+                n_q = len(items) if isinstance(items, list) else 0
+            except Exception:
+                n_q = 0
+            sub = db.query(Submission).filter(
+                Submission.publication_id == p.id,
+                Submission.user_id == 1).first()
+            status = ("Submitted" if sub and sub.status == "submitted"
+                      else ("In Progress" if sub else "Not Started"))
+            assignments.append({
+                "link_id": p.link_id,
+                "title": (asg.title if asg else None) or p.title or "Untitled",
+                "course": p.assigned_course or "",
+                "n_questions": n_q,
+                "due": p.due_date or "",
+                "status": status,
+            })
+    return lessons, assignments
+
+
+@app.get("/practice", response_class=HTMLResponse)
+def practice_page(request: Request, topic: str = "", db: Session = Depends(get_db)):
+    """Practice with AI Tutor: pick a lesson package, work its guided items.
+
+    ?topic= preselects the first package whose lesson matches the topic
+    (used by the lesson page's "Practice This Topic" button).
+    """
+    pubs = db.query(Publication).filter(
+        Publication.lesson_id.isnot(None)).order_by(
+        Publication.id.desc()).all()
+    options = []
+    for p in pubs:
+        lesson = db.get(Lesson, p.lesson_id)
+        title = (lesson.title if lesson else None) or p.title or "Untitled"
+        lesson_topic = (lesson.topic if lesson else "") or ""
+        options.append({"link_id": p.link_id, "title": title,
+                        "topic": lesson_topic,
+                        "course": p.assigned_course or ""})
+    selected = None
+    if topic:
+        needle = topic.strip().lower()
+        selected = next(
+            (o for o in options if needle in (o["topic"] or "").lower()
+             or needle in (o["title"] or "").lower()), None)
+    if not selected and options:
+        selected = options[0]
+    return templates.TemplateResponse(request, "student_practice.html", {
+        "request": request, "options": options, "selected": selected,
+        "topic": topic or (selected["topic"] if selected else ""),
+        "active_nav": "dashboard",
+        "demo": not config.ai_configured(),
+    })
+
+
+@app.post("/api/practice/items")
+def api_practice_items(payload: dict, db: Session = Depends(get_db)):
+    """Guided practice items for a student package (no solutions)."""
+    import json as _json
+
+    from .lessons import split_student_payload
+
+    link_id = str(payload.get("link_id", "") or "").strip()
+    pub = db.query(Publication).filter(
+        Publication.link_id == link_id).first()
+    if not pub or not pub.lesson_id:
+        raise HTTPException(404, "Practice package not found")
+    lesson = db.get(Lesson, pub.lesson_id)
+    if not lesson or not lesson.student_content_json:
+        return {"items": [], "title": pub.title}
+    try:
+        content = split_student_payload(_json.loads(lesson.student_content_json))
+    except Exception:
+        return {"items": [], "title": pub.title}
+    items = []
+    for g in content.get("guided_items", []) or []:
+        items.append({"item_id": g.get("item_id", ""),
+                      "prompt_latex": g.get("prompt_latex", ""),
+                      "context": g.get("context", ""),
+                      "hints_enabled": g.get("hints_enabled", True)})
+    return {"items": items, "title": content.get("title", pub.title),
+            "topic": content.get("topic", "")}
+
+
+@app.post("/api/practice/attempt")
+def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
+    """Check one practice item attempt with Socratic feedback.
+
+    Ungraded: verifies against the instructor-approved expected answer
+    using SymPy (same gate as assignments), then crafts a Socratic reply.
+    Attempts are logged; the practice session never reveals solutions
+    unless the activity policy explicitly allows it.
+    """
+    import json as _json
+
+    from .lessons import split_student_payload
+    from .verifier import MAX_LEN, check_equivalent
+
+    link_id = str(payload.get("link_id", "") or "").strip()
+    item_id = str(payload.get("item_id", "") or "").strip()
+    student = str(payload.get("response", ""))[:MAX_LEN]
+    if not student.strip():
+        return {"verdict": "incomplete", "reply": "Please enter your attempt first."}
+    pub = db.query(Publication).filter(
+        Publication.link_id == link_id).first()
+    if not pub or not pub.lesson_id:
+        raise HTTPException(404, "Practice package not found")
+    lesson = db.get(Lesson, pub.lesson_id)
+    if not lesson or not lesson.student_content_json:
+        raise HTTPException(404, "No practice content")
+    try:
+        content = split_student_payload(_json.loads(lesson.student_content_json))
+    except Exception:
+        raise HTTPException(502, "Practice content unreadable")
+    guided = {g.get("item_id"): g for g in
+              content.get("guided_items", []) or []}
+    if item_id not in guided:
+        raise HTTPException(404, "Practice item not found")
+    # Expected answer lives in the instructor-approved student content?
+    # No — guided items carry no answers by design. Resolve the expected
+    # form from the matching practice section's worked content is wrong;
+    # instead verify against the instructor's practice math via the
+    # stored instructor content practice section at the same index.
+    try:
+        instructor = _json.loads(lesson.instructor_content_json or "{}")
+    except Exception:
+        instructor = {}
+    expected = ""
+    try:
+        idx = int(item_id.split("-")[-1]) - 1
+        for s in instructor.get("sections", []) or []:
+            if isinstance(s, dict) and s.get("kind") == "practice":
+                math_items = s.get("math_latex", []) or []
+                if 0 <= idx < len(math_items):
+                    expected = str(math_items[idx])
+                break
+    except Exception:
+        expected = ""
+    verdict = check_equivalent(student, expected) if expected else None
+    status = verdict.status if verdict else "unverifiable"
+    history = DEMO_HISTORY.setdefault(f"practice:{link_id}:{item_id}", [])
+    if config.ai_configured():
+        try:
+            reply = nebius.socratic_reply(
+                {"problem": guided[item_id].get("prompt_latex", ""),
+                 "step": "practice attempt", "expected": expected or "(open practice)",
+                 "student": student, "verdict": status,
+                 "verdict_detail": verdict.detail if verdict else "no reference answer",
+                 "ai_judge": "n/a",
+                 "hint_level": int(payload.get("hint_level", 1)),
+                 "step_index": 0, "total_steps": 1,
+                 "allow_reveal": False},
+                history,
+            )
+        except Exception as exc:
+            reply = (f"Live tutor unavailable ({exc}). "
+                     "Compare your attempt with the lesson content above.")
+    else:
+        reply = ("**Demo mode** — attempt recorded. Add your Nebius key "
+                 "for live Socratic feedback.")
+    history += [{"role": "user", "content": student},
+                {"role": "assistant", "content": reply}]
+    return {"verdict": status, "reply": reply,
+            "detail": verdict.detail if verdict else ""}
 
 
 @app.get("/dashboard")
@@ -226,12 +411,11 @@ def api_review_request(payload: dict, db: Session = Depends(get_db)):
 
 @app.get("/lessons", response_class=HTMLResponse)
 def lessons_page(request: Request, db: Session = Depends(get_db)):
-    lessons = db.query(Lesson).filter(Lesson.status.in_(["approved", "published"])).all()
-    courses = db.query(Course).all()
-    activities = db.query(Activity).all()
+    """Student My Lessons: only lessons from assigned packages."""
+    lesson_cards, _ = _student_cards(
+        db, db.query(Publication).order_by(Publication.id.desc()).all())
     return templates.TemplateResponse(request, "lessons.html", {
-        "request": request, "lessons": lessons, "courses": courses,
-        "activities": activities,
+        "request": request, "cards": lesson_cards,
         "active_nav": "lessons", "demo": not config.ai_configured(),
     })
 
@@ -281,37 +465,20 @@ def instructor(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/assignments", response_class=HTMLResponse)
 def assignments(request: Request, db: Session = Depends(get_db)):
-    """Student Assignments tab: only instructor-assigned packages.
+    """Student My Assignments tab: assignment-carrying packages.
 
-    Each card is a published+assigned lesson/assignment package with its
-    course, due date, and student link. Nothing is invented: unassigned
-    practice content does not appear here.
+    Lesson-only packages appear under My Lessons; packages with an
+    assignment appear here with status, due date, and a link into the
+    assignment workspace. Nothing is invented: unassigned practice
+    content does not appear here.
     """
-    import json as _json
-
-    pubs = db.query(Publication).order_by(Publication.id.desc()).all()
-    cards = []
-    for p in pubs:
-        n_questions = 0
-        if p.assignment_id:
-            asg = db.get(Assignment, p.assignment_id)
-            if asg:
-                try:
-                    items = _json.loads(asg.questions_json or "[]")
-                    n_questions = len(items) if isinstance(items, list) else 0
-                except Exception:
-                    n_questions = 0
-        cards.append({
-            "link_id": p.link_id,
-            "title": p.title or "Untitled",
-            "course": p.assigned_course or "",
-            "due": p.due_date or "",
-            "grading": p.grading_policy or "",
-            "kind": ("Lesson + Assignment" if (p.lesson_id and p.assignment_id)
-                     else ("Lesson" if p.lesson_id else "Assignment")),
-            "n_questions": n_questions,
-            "created_at": str(p.created_at or "")[:10],
-        })
+    _, asg_cards = _student_cards(
+        db, db.query(Publication).order_by(Publication.id.desc()).all())
+    cards = [{
+        "link_id": c["link_id"], "title": c["title"], "course": c["course"],
+        "due": c["due"], "grading": "", "kind": c["status"],
+        "n_questions": c["n_questions"],
+    } for c in asg_cards]
     return templates.TemplateResponse(
         request, "assignments.html", {"request": request, "cards": cards})
 
@@ -1200,7 +1367,12 @@ def api_assign(payload: dict, db: Session = Depends(get_db)):
 
 @app.get("/learn/{link_id}", response_class=HTMLResponse)
 def student_learn(link_id: str, request: Request, db: Session = Depends(get_db)):
-    """Student-facing interactive lesson: derived content only, no keys."""
+    """Student lesson reading page (My Lessons -> View Lesson).
+
+    Renders instructor-approved lesson content only; assignment items in
+    the same package are listed separately, never solved here. Canonical
+    student URL; /mylessons/{link_id} redirects here.
+    """
     import json as _json
 
     from .lessons import split_student_payload
@@ -1209,42 +1381,169 @@ def student_learn(link_id: str, request: Request, db: Session = Depends(get_db))
         Publication.link_id == link_id).first()
     if not pub:
         raise HTTPException(404, "Lesson link not found")
+    if not pub.lesson_id:
+        # Assignment-only package: send the student to the assignment
+        # workspace instead of 404ing a valid package.
+        return RedirectResponse(f"/myassignments/{link_id}", status_code=303)
     lesson_payload: dict = {}
-    if pub.lesson_id:
-        lesson = db.get(Lesson, pub.lesson_id)
-        if lesson and lesson.student_content_json:
-            try:
-                lesson_payload = split_student_payload(
-                    _json.loads(lesson.student_content_json))
-            except Exception:
-                lesson_payload = {}
-    asg_items: list[dict] = []
-    if pub.assignment_id:
-        asg = db.get(Assignment, pub.assignment_id)
-        if asg:
-            try:
-                raw = _json.loads(asg.questions_json or "[]")
-            except Exception:
-                raw = []
-            # Strip instructor-only data: steps keep prompts (students need
-            # them to attempt), solutions never leave the server.
-            for it in raw:
-                if not isinstance(it, dict):
-                    continue
-                asg_items.append({
-                    "item_id": it.get("item_id", ""),
-                    "prompt_latex": it.get("prompt_latex", ""),
-                    "steps": [{"description": (s.get("description", "") if isinstance(s, dict) else ""),
-                               "hints": (list(s.get("hints", [])) if isinstance(s, dict) else [])}
-                              for s in it.get("steps", [])],
-                    "hints": list(it.get("hints", [])),
-                    "difficulty": it.get("difficulty", 3),
-                })
+    lesson = db.get(Lesson, pub.lesson_id)
+    if lesson and lesson.student_content_json:
+        try:
+            lesson_payload = split_student_payload(
+                _json.loads(lesson.student_content_json))
+        except Exception:
+            lesson_payload = {}
     return templates.TemplateResponse(request, "student_lesson.html", {
         "request": request, "publication": pub,
-        "lesson": lesson_payload, "assignment_items": asg_items,
+        "lesson": lesson_payload,
+        "active_nav": "lessons",
         "demo": not config.ai_configured(),
     })
+
+
+@app.get("/mylessons/{link_id}", response_class=HTMLResponse)
+def student_lesson_alias(link_id: str, request: Request):
+    """Stable My Lessons URL; the canonical page is /learn/{link_id}."""
+    return RedirectResponse(f"/learn/{link_id}", status_code=303)
+
+
+def _assignment_items_for_student(db: Session, pub) -> list[dict]:
+    """Student-safe assignment items: prompts + step descriptions + hints.
+
+    Solutions never leave the server; expected answers are excluded.
+    """
+    import json as _json
+
+    if not pub.assignment_id:
+        return []
+    asg = db.get(Assignment, pub.assignment_id)
+    if not asg:
+        return []
+    try:
+        raw = _json.loads(asg.questions_json or "[]")
+    except Exception:
+        return []
+    items = []
+    for it in raw:
+        if not isinstance(it, dict):
+            continue
+        items.append({
+            "item_id": it.get("item_id", ""),
+            "prompt_latex": it.get("prompt_latex", ""),
+            "steps": [{"description": (s.get("description", "")
+                                       if isinstance(s, dict) else ""),
+                       "hints": (list(s.get("hints", []))
+                                 if isinstance(s, dict) else [])}
+                      for s in it.get("steps", [])],
+            "hints": list(it.get("hints", [])),
+            "difficulty": it.get("difficulty", 3),
+        })
+    return items
+
+
+@app.get("/myassignments/{link_id}", response_class=HTMLResponse)
+def student_assignment(link_id: str, request: Request,
+                       db: Session = Depends(get_db)):
+    """Student assignment workspace: answer, save progress, submit.
+
+    Loads the exact published assignment; restores the student's saved
+    draft answers when reopened. Submitted work renders a confirmation.
+    """
+    import json as _json
+
+    pub = db.query(Publication).filter(
+        Publication.link_id == link_id).first()
+    if not pub or not pub.assignment_id:
+        raise HTTPException(404, "Assignment not found")
+    asg = db.get(Assignment, pub.assignment_id)
+    if not asg:
+        raise HTTPException(404, "Assignment not found")
+    items = _assignment_items_for_student(db, pub)
+    sub = db.query(Submission).filter(
+        Submission.publication_id == pub.id,
+        Submission.user_id == 1).first()
+    try:
+        saved = _json.loads(sub.answers_json) if sub and sub.answers_json else {}
+    except Exception:
+        saved = {}
+    return templates.TemplateResponse(request, "student_assignment.html", {
+        "request": request, "publication": pub,
+        "title": asg.title or pub.title or "Untitled",
+        "due": pub.due_date or "", "course": pub.assigned_course or "",
+        "items": items, "saved": saved if isinstance(saved, dict) else {},
+        "submitted": bool(sub and sub.status == "submitted"),
+        "submitted_at": str(sub.submitted_at)[:16] if sub and sub.submitted_at else "",
+        "active_nav": "assignments",
+        "demo": not config.ai_configured(),
+    })
+
+
+@app.post("/api/assignments/progress")
+def api_assignment_progress(payload: dict, db: Session = Depends(get_db)):
+    """Save draft answers (resume any time). Never marks submitted."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    link_id = str(payload.get("link_id", "") or "").strip()
+    pub = db.query(Publication).filter(
+        Publication.link_id == link_id).first()
+    if not pub or not pub.assignment_id:
+        raise HTTPException(404, "Assignment not found")
+    sub = db.query(Submission).filter(
+        Submission.publication_id == pub.id,
+        Submission.user_id == 1).first()
+    if sub and sub.status == "submitted":
+        raise HTTPException(400, "Already submitted — answers are final")
+    answers = payload.get("answers") or {}
+    if not isinstance(answers, dict):
+        raise HTTPException(400, "Invalid answers")
+    clean = {str(k)[:40]: str(v)[:2000] for k, v in answers.items()}
+    if not sub:
+        sub = Submission(publication_id=pub.id, user_id=1,
+                         answers_json=_json.dumps(clean), status="draft")
+        db.add(sub)
+    else:
+        sub.answers_json = _json.dumps(clean)
+        sub.status = "draft"
+        sub.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"saved": True, "n_answers": len(clean)}
+
+
+@app.post("/api/assignments/submit")
+def api_assignment_submit(payload: dict, db: Session = Depends(get_db)):
+    """Final submission: persists answers, locks the row. No re-submit."""
+    import json as _json
+    from datetime import datetime, timezone
+
+    link_id = str(payload.get("link_id", "") or "").strip()
+    pub = db.query(Publication).filter(
+        Publication.link_id == link_id).first()
+    if not pub or not pub.assignment_id:
+        raise HTTPException(404, "Assignment not found")
+    sub = db.query(Submission).filter(
+        Submission.publication_id == pub.id,
+        Submission.user_id == 1).first()
+    if sub and sub.status == "submitted":
+        raise HTTPException(400, "Already submitted")
+    answers = payload.get("answers") or {}
+    if not isinstance(answers, dict):
+        raise HTTPException(400, "Invalid answers")
+    clean = {str(k)[:40]: str(v)[:2000] for k, v in answers.items()}
+    now = datetime.now(timezone.utc)
+    if not sub:
+        sub = Submission(publication_id=pub.id, user_id=1,
+                         answers_json=_json.dumps(clean), status="submitted",
+                         submitted_at=now)
+        db.add(sub)
+    else:
+        sub.answers_json = _json.dumps(clean)
+        sub.status = "submitted"
+        sub.submitted_at = now
+    db.commit()
+    return {"submitted": True,
+            "submitted_at": str(now)[:16],
+            "n_answers": len(clean)}
 
 
 @app.get("/api/learn/{link_id}")

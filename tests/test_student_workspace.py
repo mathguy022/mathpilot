@@ -58,10 +58,10 @@ def chain_activity():
         db.close()
 
 
-def test_practice_redirect(chain_activity):
-    r = client.get("/practice", follow_redirects=False)
-    assert r.status_code in (302, 303, 307)
-    assert "/activity/" in r.headers["location"]
+def test_practice_page_renders():
+    r = client.get("/practice", follow_redirects=True)
+    assert r.status_code == 200
+    assert "Practice with AI Tutor" in r.text
 
 
 def test_student_routes_render():
