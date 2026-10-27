@@ -101,3 +101,19 @@ def test_double_escaped_latex_collapses():
 def test_spacing_commands_ignored():
     v = check_equivalent("x\\\\,=\\\\;2", "x=2")
     assert v.status == "correct", f"{v.status}: {v.detail}"
+
+
+def test_root_in_numerator_stays_a_quotient():
+    """A root inside a fraction used to normalize into a product."""
+    v = check_equivalent(r"\frac{\sqrt{x+4} - 2}{x}", "(sqrt(x+4)-2)/x")
+    assert v.status == "correct", f"{v.status}: {v.detail}"
+
+
+def test_root_in_numerator_is_not_the_product():
+    v = check_equivalent(r"\frac{\sqrt{x+4} - 2}{x}", r"x(\sqrt{x+4}-2)")
+    assert v.status == "incorrect"
+
+
+def test_nested_fraction_converts_innermost_first():
+    v = check_equivalent(r"\frac{\frac{1}{2}}{3}", "1/6")
+    assert v.status == "correct", f"{v.status}: {v.detail}"

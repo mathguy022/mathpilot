@@ -3,7 +3,7 @@
 {% block content %}
 <div class="breadcrumb">Student Workspace &nbsp;/&nbsp; <span>Practice with AI Tutor</span></div>
 <h1 class="page-title">Practice with AI Tutor</h1>
-<p class="page-subtitle">Ungraded practice with Socratic guidance — try, get hints, and retry.</p>
+<p class="page-subtitle">Build confidence with guided, ungraded practice.</p>
 
 {% if not selected %}
 <div class="card empty-state" style="margin-top:16px">
@@ -12,111 +12,244 @@
   <div class="row" style="margin-top:10px; justify-content:center;"><a class="btn small ghost" href="/">Back to dashboard →</a></div>
 </div>
 {% else %}
-<div class="card" style="margin-top:16px;">
-  <label for="pkg-select"><b>Practice package</b></label>
-  <select id="pkg-select" onchange="loadItems()" style="width:100%; border:1px solid #cbd5e1; border-radius:10px; padding:8px 10px; font-size:14px;">
-    {% for o in options %}<option value="{{ o.link_id }}" {% if selected and o.link_id == selected.link_id %}selected{% endif %}>{{ o.title }}{% if o.topic %} — {{ o.topic }}{% endif %}</option>{% endfor %}
-  </select>
+<div class="pkg-row">
+  <div class="pkg-card">
+    <label class="pkg-label" for="pkg-select">Practice package</label>
+    <select id="pkg-select" class="pkg-select" onchange="loadItems()" aria-label="Practice package">
+      {% for o in options %}<option value="{{ o.link_id }}" {% if selected and o.link_id == selected.link_id %}selected{% endif %}>{{ o.title }}{% if o.topic %} — {{ o.topic }}{% endif %}</option>{% endfor %}
+    </select>
+  </div>
+  <span class="pill-badge" id="pkg-topic"></span>
 </div>
 
-<div class="workspace-grid" style="margin-top:16px;">
-  <div class="workspace-main">
-    <div class="question-card">
-      <div class="question-top-row">
-        <span class="question-number" id="q-counter">QUESTION 1 of 1</span>
-        <span class="approval-badge">Ungraded practice</span>
-      </div>
-      <div class="question-prompt" id="q-context">Guided practice</div>
-      <div class="problem-math-hero" id="q-prompt">Loading…</div>
-      <div style="display:flex; gap:8px; margin-top:10px;">
-        <button type="button" class="btn small ghost" id="prev-btn" onclick="moveQ(-1)">← Prev</button>
-        <button type="button" class="btn small ghost" id="next-btn" onclick="moveQ(1)">Next →</button>
-      </div>
-    </div>
-
-    <div class="working-card">
-      <div class="working-card-title">Your attempt</div>
-      <math-field id="mf" placeholder="Enter your expression"></math-field>
-      <div class="math-quick-bar">
-        <button type="button" class="symbol-btn" onclick="insertMath('\\frac{}{}')">a/b</button>
-        <button type="button" class="symbol-btn" onclick="insertMath('^{}')">xⁿ</button>
-        <button type="button" class="symbol-btn" onclick="insertMath('\\sqrt{}')">√</button>
-        <button type="button" class="symbol-btn" onclick="insertMath('()')">( )</button>
-      </div>
-      <div class="action-row">
-        <button type="button" class="link-btn" onclick="checkAttempt(true)">Ask for a hint</button>
-        <button type="button" class="btn-primary" id="check-btn" onclick="checkAttempt(false)">Check Step</button>
-      </div>
-      <div id="practice-feedback" style="margin-top:10px;"></div>
-    </div>
+<div class="practice-card">
+  <div class="question-top-row">
+    <span class="question-number" id="q-counter">QUESTION 0 OF 0</span>
+    <span class="approval-badge">Ungraded practice</span>
+  </div>
+  <div class="progress-row">
+    <div class="progress-track"><div class="progress-fill" id="q-progress"></div></div>
+    <span class="progress-pct" id="q-pct">0%</span>
   </div>
 
-  <aside class="workspace-sidebar">
-    <div class="support-card">
-      <div class="support-card-head">
-        <div class="support-card-title">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple-primary)" stroke-width="2.5"><polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9 12 2"></polygon></svg>
-          AI Math Tutor
-        </div>
-        <div class="support-card-pills"><span class="pill-badge">A hint, not the answer</span></div>
-      </div>
-      <div class="tutor-chat-box" id="tutor-chat" style="max-height:320px; overflow-y:auto;">
-        <div class="tutor-msg-bubble"><div class="tutor-avatar">🤖</div>
-        <div id="tutor-hello">Pick a package above, then attempt the question. I'll guide you one step at a time.</div></div>
-      </div>
-      <div class="tutor-actions">
-        <button type="button" class="btn-tutor-action" onclick="checkAttempt(true)">Get Hint</button>
-        <button type="button" class="btn-tutor-action" onclick="explainStep()">Explain This Step</button>
-      </div>
+  <div class="question-body">
+    <div class="question-prompt" id="q-context">Guided practice</div>
+    <div class="problem-math-hero" id="q-prompt">Loading…</div>
+    <p class="work-hint">Show your work one step at a time.</p>
+  </div>
+
+  <div class="answer-box">
+    <textarea id="plain-input" class="answer-plain" rows="4" maxlength="500"
+      placeholder="Enter your next step or answer..." aria-label="Your next step or answer"></textarea>
+    <math-field id="mf" hidden placeholder="Enter your next step or answer..."></math-field>
+    <button type="button" class="input-toggle" id="input-toggle" onclick="toggleInput()" aria-pressed="false">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M7 8h4M7 12h2M13 12h4M7 16h4"></path></svg>
+      <span id="input-toggle-label">Math Input</span>
+    </button>
+  </div>
+
+  <div class="math-quick-bar">
+    <button type="button" class="symbol-btn" onclick="insertMath('\\frac{}{}')" title="Fraction">a/b</button>
+    <button type="button" class="symbol-btn" onclick="insertMath('^{}')" title="Exponent">xⁿ</button>
+    <button type="button" class="symbol-btn" onclick="insertMath('\\sqrt{}')" title="Square root">√</button>
+    <button type="button" class="symbol-btn" onclick="insertMath('()')" title="Parentheses">( )</button>
+    <button type="button" class="symbol-btn" onclick="insertMath('\\pi')" title="Pi">π</button>
+  </div>
+
+  <div class="practice-actions">
+    <button type="button" class="btn-primary" id="check-btn" onclick="checkAttempt()">Check Step &nbsp;→</button>
+    <button type="button" class="btn-outline" id="hint-btn" onclick="askHint()">💡&nbsp; Get a Hint</button>
+    <button type="button" class="text-btn" onclick="skipQ()">Skip Question</button>
+  </div>
+
+  <div class="step-feedback" id="practice-feedback-panel" hidden>
+    <div class="step-feedback-head" id="practice-feedback-head">💡 Step feedback</div>
+    <div class="step-feedback-body" id="practice-feedback"></div>
+  </div>
+
+  <div class="nav-row">
+    <button type="button" class="btn-ghost" id="prev-btn" onclick="moveQ(-1)">← &nbsp;Previous</button>
+    <button type="button" class="btn-primary" id="next-btn" onclick="moveQ(1)">Next question &nbsp;→</button>
+  </div>
+</div>
+
+<p class="ungraded-note">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>
+  <span><strong>Practice is ungraded.</strong> Your progress is saved automatically.</span>
+</p>
+
+<div class="support-card practice-tutor-card">
+  <div class="support-card-head">
+    <div class="support-card-title">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple-primary)" stroke-width="2.5"><polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9 12 2"></polygon></svg>
+      AI Math Tutor
     </div>
-  </aside>
+    <div class="support-card-pills"><span class="pill-badge">A hint, not the answer</span></div>
+  </div>
+  <div class="tutor-chat-box" id="tutor-chat" style="max-height:340px; overflow-y:auto;">
+    <div class="tutor-msg-bubble"><div class="tutor-avatar">🤖</div>
+    <div id="tutor-hello">Ask me anything about this item — type a question, your working, or just “I'm stuck”. I guide; your course math is what I cover.</div></div>
+  </div>
+  <div class="tutor-mode-row">
+    <span class="pill-badge" id="tutor-mode-label">Item help</span>
+    <button type="button" class="btn-tutor-action" id="steps-btn" onclick="startSteps()">Work it step by step</button>
+    <button type="button" class="btn-tutor-action" id="back-btn" onclick="backToItem()" hidden>Back to this item</button>
+  </div>
+  <div class="tutor-actions">
+    <button type="button" class="btn-tutor-action" onclick="explainStep()">Explain This Step</button>
+  </div>
+  <form class="tutor-input-row" id="tutor-form" autocomplete="off">
+    <input type="text" id="tutor-input" placeholder="Ask a question or type your math" maxlength="500" aria-label="Message the tutor">
+    <button type="submit" class="btn-primary" id="tutor-send">Send</button>
+  </form>
 </div>
 {% endif %}
 
 <script>
-let ITEMS=[], QI=0, LINK_ID="{{ selected.link_id if selected else '' }}", HINT_LEVEL=1;
-function insertMath(latex){ const mf=document.getElementById('mf'); if(mf){ try{mf.executeCommand(['insert',latex]);}catch(e){} mf.focus(); } }
-function tutorSay(html){ const box=document.getElementById('tutor-chat');
- const d=document.createElement('div'); d.className='tutor-msg-bubble';
- d.innerHTML='<div class="tutor-avatar">🤖</div><div>'+html+'</div>';
+let ITEMS=[], QI=0, LINK_ID="{{ selected.link_id if selected else '' }}";
+let COURSE="{{ selected.course if selected else '' }}", MODE="item", BUSY=false;
+let USE_MATH_INPUT=false;
+function esc(s){ return String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function plainBox(){ return document.getElementById('plain-input'); }
+function mathBox(){ return document.getElementById('mf'); }
+function getInput(){ if(USE_MATH_INPUT){ const mf=mathBox(); try{ return String(mf&&mf.getValue('latex')||mf&&mf.value||'').trim(); }catch(e){ return String(mf&&mf.value||'').trim(); } }
+  return String(plainBox().value||'').trim(); }
+function clearInput(){ const p=plainBox(); if(p) p.value=''; const mf=mathBox(); try{ mf&&mf.setValue(''); }catch(e){} }
+function toggleInput(){ const next=!USE_MATH_INPUT, p=plainBox(), mf=mathBox(), keep=getInput();
+  USE_MATH_INPUT=next; if(p) p.hidden=next; if(mf) mf.hidden=!next;
+  document.getElementById('input-toggle-label').textContent = next?'Text Input':'Math Input';
+  document.getElementById('input-toggle').setAttribute('aria-pressed', next?'true':'false');
+  if(next){ try{ mf&&mf.setValue(keep); }catch(e){} } else if(p){ p.value=keep; p.focus(); } }
+function insertMath(latex){ if(USE_MATH_INPUT){ const mf=mathBox(); if(!mf) return;
+  try{ mf.executeCommand(['insert',latex]); }catch(e){} mf.focus(); return; }
+  const p=plainBox(); if(!p) return; const s=p.selectionStart, e=p.selectionEnd;
+  const piece=latex.replace(/[{}]/g,'').replace('\\frac{}{}','( )/( )').replace('\\sqrt{}','sqrt( )').replace('^{}','^');
+  p.value=p.value.slice(0,s)+piece+p.value.slice(e); p.selectionStart=p.selectionEnd=s+piece.length;
+  p.focus(); }
+function bubble(who, html, cls){ const box=document.getElementById('tutor-chat'); if(!box) return null;
+ const d=document.createElement('div');
+ d.className='tutor-msg-bubble'+(who==='student'?' student':'')+(cls?' '+cls:'');
+ d.innerHTML = who==='student' ? '<div>'+html+'</div>'
+   : '<div class="tutor-avatar">🤖</div><div>'+html+'</div>';
  box.appendChild(d); box.scrollTop=box.scrollHeight;
- if(window.renderMath) window.renderMath(d); }
-async function loadItems(){
- LINK_ID=document.getElementById('pkg-select').value; QI=0; HINT_LEVEL=1;
+ if(window.renderMath) window.renderMath(d); return d; }
+function say(html, cls){ return bubble('tutor', html, cls); }
+function ask(text){ return bubble('student', esc(text)); }
+function tutorSay(html){ return say(html); }
+function typing(){ return bubble('tutor','<span class="tutor-typing"><i></i><i></i><i></i></span>'); }
+async function post(url, body, ms=60000){ const ctl=new AbortController();
+ const timer=setTimeout(()=>ctl.abort(), ms);
+ try{ const r=await fetch(url,{method:'POST',
+   headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+   signal:ctl.signal});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.detail || ('request failed ('+r.status+')'));
+  return j; }
+ catch(e){ if(e && e.name==='AbortError')
+   throw new Error('the tutor is still working on that — send it once more');
+  throw e; }
+ finally{ clearTimeout(timer); } }
+function setBusy(on){ BUSY=on;
+ ['tutor-input','tutor-send','steps-btn','check-btn','hint-btn','plain-input'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled=on; }); }
+function setMode(){ const lbl=document.getElementById('tutor-mode-label'),
+  sbtn=document.getElementById('steps-btn'), bbtn=document.getElementById('back-btn');
+ if(lbl && MODE!=='steps') lbl.textContent='Item help';
+ if(sbtn) sbtn.hidden = MODE==='steps'; if(bbtn) bbtn.hidden = MODE!=='steps'; }
+function stepFeedback(html, tone){ const panel=document.getElementById('practice-feedback-panel'),
+  body=document.getElementById('practice-feedback'), head=document.getElementById('practice-feedback-head');
+ if(!panel||!body) return;
+ if(html==null){ panel.hidden=true; body.innerHTML=''; return; }
+ panel.hidden=false; panel.className='step-feedback'+(tone?' '+tone:'');
+ if(head) head.innerHTML = tone==='ok' ? '✔ Step feedback' : '💡 Step feedback';
+ body.innerHTML=html;
+ if(window.renderMath) window.renderMath(body); }
+function showVerdict(j){
+ if(j.verdict==='correct') stepFeedback('Verified with our math checker — nice work. <button type="button" class="text-btn" onclick="moveQ(1)">Next question →</button>', 'ok');
+ else if(j.verdict==='incomplete') stepFeedback('Enter your next step, or tap <b>Get a Hint</b>.');
+ else if(j.verdict==='not_an_attempt') return;
+ else stepFeedback(esc(j.reply || j.detail || 'Needs work — try one more step.')); }
+function renderRecap(rc){ if(!rc||!rc.steps) return '';
+ return '<ol>'+rc.steps.map(s=>'<li><b>'+esc(s.action)+'</b> $'+esc(s.result)+'$<br><small>'+esc(s.why)+'</small></li>').join('')
+   +'</ol><p><b>Answer:</b> $'+esc(rc.answer)+'$</p>'; }
+function render(j){ const rt=j.replyType||'bubble', txt=j.reply||'';
+ if(rt==='step'){ const m=/Step\s+(\d+)\s*:\s*(.*)/is.exec(txt);
+   say(m ? '<strong>Step '+m[1]+'</strong><br>'+esc(m[2]) : esc(txt), 'tutor-chat-card');
+   if(m) stepFeedback('<b>Step '+m[1]+'</b> '+esc(m[2])); }
+ else if(rt==='hint'){ const hm=/^\s*(Hint\s*\d+)\s*[—\-–:]\s*(.*)$/is.exec(txt);
+   say(hm ? '💡 <strong>'+esc(hm[1])+'</strong><br>'+esc(hm[2]) : '💡 '+esc(txt), 'tutor-chat-hint');
+   stepFeedback(hm ? '<b>'+esc(hm[1])+'</b> '+esc(hm[2]) : esc(txt)); }
+ else if(rt==='success'){ say('✔ '+esc(txt), 'tutor-chat-ok'); }
+ else if(rt==='recap'){ say(esc(txt)+'<br>'+renderRecap(j.recap), 'tutor-chat-card'); }
+ else if(rt==='confirm_new_problem'){
+   const d=say(esc(txt)+'<br><button type="button" class="btn-tutor-action" data-c="yes">Start new problem</button> <button type="button" class="btn-tutor-action" data-c="no">No, it’s my answer</button>');
+   if(d) d.querySelectorAll('[data-c]').forEach(b=>b.addEventListener('click', ()=>{
+     sendChat(b.getAttribute('data-c')==='yes' ? 'Start new problem' : "No, it's my answer"); })); }
+ else say(esc(txt));
+ if(MODE==='item' && typeof j.verdict!=='undefined') showVerdict(j);
+ if(MODE==='steps' && j.totalSteps){ const lbl=document.getElementById('tutor-mode-label');
+   if(lbl) lbl.textContent='Step '+Math.min((j.stepIndex||0)+1, j.totalSteps)+' of '+j.totalSteps; } }
+async function sendChat(text){ text=String(text||'').trim(); if(!text||BUSY) return;
+ ask(text); const inp=document.getElementById('tutor-input'); if(inp) inp.value='';
+ setBusy(true); const t=typing();
+ try{ let j;
+  if(MODE==='steps') j=await post('/api/tutor/message',{message:text.slice(0,500),
+    pageContext:{type:'general', course:COURSE, mode:'practice'}});
+  else j=await post('/api/practice/attempt',{link_id:LINK_ID,
+    item_id:(ITEMS[QI]||{}).item_id||'', response:text.slice(0,500), course:COURSE});
+  t.remove(); render(j);
+  if(MODE==='item' && j.verdict==='correct' && QI<ITEMS.length-1)
+    setTimeout(()=>{ QI++; MODE='item'; setMode(); renderQ(); }, 900);
+ }catch(e){ t.remove(); say('Sorry — '+esc(e.message||'that failed')+'. Try once more in a moment.'); }
+ setBusy(false); }
+function askHint(){ sendChat(MODE==='steps' ? 'I need a hint on this step' : "I'm stuck — give me a hint"); }
+function explainStep(){ sendChat('Explain this step'); }
+function startSteps(){ const p=((ITEMS[QI]||{}).prompt_latex||'').trim();
+ if(!p){ say('This item has no equation I can split into steps. Send me your working in the chat box and I’ll guide the next move.'); return; }
+ MODE='steps'; setMode(); sendChat(p); }
+function backToItem(){ MODE='item'; setMode();
+ say('Back to the item above. Send me your attempt, or ask me a question about it.'); }
+async function loadItems(){ LINK_ID=document.getElementById('pkg-select').value;
+ QI=0; MODE='item'; setMode();
  document.getElementById('tutor-chat').innerHTML='<div class="tutor-msg-bubble"><div class="tutor-avatar">🤖</div><div>Loading practice items…</div></div>';
- try{ const r=await fetch('/api/practice/items',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_id:LINK_ID})});
-  const j=await r.json(); if(!r.ok){ tutorSay('Error: '+(j.detail||'failed')); return; }
+ try{ const j=await post('/api/practice/items',{link_id:LINK_ID});
   ITEMS=j.items||[]; renderQ();
-  tutorSay(ITEMS.length?('Ready — '+ITEMS.length+' practice item(s) on <b>'+j.title+'</b>. Attempt the first one!'):'No practice items in this package yet.');
- }catch(e){ tutorSay('Request failed.'); } }
-function renderQ(){ const fb=document.getElementById('practice-feedback'); fb.innerHTML='';
- if(!ITEMS.length){ document.getElementById('q-prompt').textContent='No items.'; document.getElementById('q-counter').textContent='QUESTION 0 of 0'; return; }
- QI=Math.max(0,Math.min(QI,ITEMS.length-1));
- const it=ITEMS[QI];
- document.getElementById('q-counter').textContent='QUESTION '+(QI+1)+' of '+ITEMS.length;
+  const chip=document.getElementById('pkg-topic');
+  if(chip){ chip.textContent=j.topic||''; chip.hidden=!j.topic; }
+  say(ITEMS.length?('Ready — '+ITEMS.length+' practice item(s) on <b>'+esc(j.title)+'</b>. Type your attempt or ask me anything.')
+    :'No practice items in this package yet.');
+ }catch(e){ say('Error: '+esc(e.message||'failed')); } }
+function renderQ(){ stepFeedback(null);
+ const counter=document.getElementById('q-counter'), fill=document.getElementById('q-progress'),
+   pct=document.getElementById('q-pct');
+ if(!ITEMS.length){ setPrompt('');
+  document.getElementById('q-context').textContent='Guided practice';
+  counter.textContent='QUESTION 0 OF 0'; fill.style.width='0%'; pct.textContent='0%';
+  document.getElementById('prev-btn').disabled=true;
+  document.getElementById('next-btn').disabled=true; return; }
+ QI=Math.max(0,Math.min(QI,ITEMS.length-1)); const it=ITEMS[QI];
+ counter.textContent='QUESTION '+(QI+1)+' OF '+ITEMS.length;
+ const done=Math.round(((QI+1)/ITEMS.length)*100);
+ fill.style.width=done+'%'; pct.textContent=done+'%';
  document.getElementById('q-context').textContent=it.context||'Guided practice';
- document.getElementById('q-prompt').textContent=it.prompt_latex||'';
- try{ document.getElementById('mf').setValue(''); }catch(e){}
- if(window.renderMath) window.renderMath(document.getElementById('q-prompt')); }
-function moveQ(d){ QI+=d; HINT_LEVEL=1; renderQ(); }
-function explainStep(){ tutorSay('Explain what you tried in your own words, then press <b>Check Step</b> — I will respond to your reasoning, not just the answer.'); }
-async function checkAttempt(isHint){ const mf=document.getElementById('mf');
- let val=''; try{ val=mf.getValue('latex')||mf.value||''; }catch(e){ val=mf.value||''; }
- val=(val||'').trim();
- const btn=document.getElementById('check-btn'); btn.disabled=true;
- if(isHint) HINT_LEVEL=Math.min(4,HINT_LEVEL+1);
- if(!val && !isHint){ document.getElementById('practice-feedback').innerHTML='<span style="color:var(--amber);font-size:13px;font-weight:600;">Enter your attempt first, or press Get Hint.</span>'; btn.disabled=false; return; }
- try{ const r=await fetch('/api/practice/attempt',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({link_id:LINK_ID,item_id:(ITEMS[QI]||{}).item_id||'',response:val,hint_level:HINT_LEVEL})});
-  const j=await r.json(); if(!r.ok){ tutorSay('Error: '+(j.detail||'failed')); btn.disabled=false; return; }
-  const ok=j.verdict==='correct';
-  document.getElementById('practice-feedback').innerHTML= ok
-   ? '<span style="color:var(--green);font-size:13px;font-weight:700;">✔ Verified — nice work!</span>'
-   : '<span style="color:var(--muted);font-size:13px;">'+(j.detail||j.verdict||'Needs work')+'</span>';
-  tutorSay(j.reply||'(no reply)');
-  if(ok && QI<ITEMS.length-1){ setTimeout(()=>{ QI++; HINT_LEVEL=1; renderQ(); }, 800); }
- }catch(e){ tutorSay('Request failed.'); }
- btn.disabled=false; }
-window.addEventListener('load', ()=>{ if(LINK_ID) loadItems(); });
+ setPrompt(it.prompt_latex);
+ clearInput();
+ document.getElementById('prev-btn').disabled=QI===0;
+ document.getElementById('next-btn').disabled=QI===ITEMS.length-1; }
+function setPrompt(latex){ const el=document.getElementById('q-prompt');
+ const t=String(latex||'').trim();
+ if(!t){ el.textContent='No item text — send your working in the chat and I will guide the next move.'; return; }
+ el.innerHTML='$$'+esc(t)+'$$'; if(window.renderMath) window.renderMath(el); }
+function moveQ(d){ const next=QI+d; if(next<0||next>ITEMS.length-1) return;
+ QI=next; MODE='item'; setMode(); renderQ(); }
+function skipQ(){ if(QI>=ITEMS.length-1){ stepFeedback('This is the last item in the package.'); return; }
+ moveQ(1); }
+function checkAttempt(){ const val=getInput();
+ if(!val){ stepFeedback('Enter your next step first, or tap <b>Get a Hint</b>.'); return; }
+ sendChat(val); }
+window.addEventListener('load', ()=>{ const f=document.getElementById('tutor-form');
+ if(f) f.addEventListener('submit', (ev)=>{ ev.preventDefault();
+   sendChat(document.getElementById('tutor-input').value); });
+ if(LINK_ID) loadItems(); });
 </script>
 {% endblock %}

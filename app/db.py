@@ -188,6 +188,40 @@ def ensure_schema():
                 submitted_at DATETIME,
                 created_at DATETIME,
                 updated_at DATETIME)""")
+        # Floating-tutor tables (new tables only; existing ones untouched).
+        conn.exec_driver_sql(
+            f"""CREATE TABLE IF NOT EXISTS {TutorSession.__tablename__} (
+                id INTEGER PRIMARY KEY,
+                student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                course_id VARCHAR(200) DEFAULT '',
+                problem_text TEXT DEFAULT '',
+                solution_plan_json TEXT DEFAULT '[]',
+                status VARCHAR(20) DEFAULT 'active',
+                current_step_index INTEGER DEFAULT 0,
+                total_steps INTEGER DEFAULT 0,
+                total_misses INTEGER DEFAULT 0,
+                hints_used INTEGER DEFAULT 0,
+                graded_mode BOOLEAN DEFAULT 0,
+                created_at DATETIME,
+                completed_at DATETIME)""")
+        conn.exec_driver_sql(
+            f"""CREATE TABLE IF NOT EXISTS {TutorEvent.__tablename__} (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL REFERENCES {TutorSession.__tablename__}(id),
+                step_index INTEGER DEFAULT 0,
+                student_input TEXT DEFAULT '',
+                verdict VARCHAR(30) DEFAULT '',
+                hint_level INTEGER DEFAULT 0,
+                event_type VARCHAR(30) DEFAULT 'message',
+                tutor_reply TEXT DEFAULT '',
+                created_at DATETIME)""")
+        # What the tutor said back: lets the widget answer in context.
+        ev_cols = {r[1] for r in conn.exec_driver_sql(
+            f"PRAGMA table_info({TutorEvent.__tablename__})")}
+        if "tutor_reply" not in ev_cols:
+            conn.exec_driver_sql(
+                f"ALTER TABLE {TutorEvent.__tablename__} "
+                "ADD COLUMN tutor_reply TEXT DEFAULT ''")
 
 
 class ReviewRequest(Base):
@@ -217,6 +251,45 @@ class Submission(Base):
     submitted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class TutorSession(Base):
+    """Floating-tutor guided session: one per student per course thread.
+
+    The solution_plan_json is server-side only (never sent to the browser).
+    Shared between the floating widget and the AI Tutor tab: both surfaces
+    read/write the same open session row.
+    """
+
+    __tablename__ = "tutor_sessions"
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    course_id = Column(String(200), default="")
+    problem_text = Column(Text, default="")
+    solution_plan_json = Column(Text, default="[]")
+    status = Column(String(20), default="active")  # active|completed|abandoned
+    current_step_index = Column(Integer, default=0)
+    total_steps = Column(Integer, default=0)
+    total_misses = Column(Integer, default=0)
+    hints_used = Column(Integer, default=0)
+    graded_mode = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class TutorEvent(Base):
+    """Append-only log of floating-tutor interactions (instructor-visible)."""
+
+    __tablename__ = "tutor_events"
+    id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey("tutor_sessions.id"), nullable=False)
+    step_index = Column(Integer, default=0)
+    student_input = Column(Text, default="")
+    verdict = Column(String(30), default="")  # correct|incorrect|unclear|...
+    hint_level = Column(Integer, default=0)
+    event_type = Column(String(30), default="message")
+    tutor_reply = Column(Text, default="")  # what the tutor said back
+    created_at = Column(DateTime, default=utcnow)
 
 
 def get_db():

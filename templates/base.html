@@ -6,11 +6,12 @@
 <title>{% block title %}MathPilot{% endblock %} · AI Math Teaching & Learning</title>
 <link rel="stylesheet" href="/static/styles.css?v=5">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mathlive@4.15.0/dist/mathlive.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mathlive@0.111.1/mathlive-static.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mathlive@0.111.1/mathlive-fonts.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 <script defer src="/static/js/math-render.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/mathlive@4.15.0/dist/mathlive.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathlive@0.111.1/mathlive.min.js"></script>
 </head>
 <body>
 
@@ -41,7 +42,7 @@
   <div style="display:flex; align-items:center; gap:20px;">
     <!-- Prominent Role Switcher -->
     <div class="role-pill-switcher" aria-label="Role Switcher">
-      <a href="/practice" class="role-pill {% if nav != 'instructor' and nav != 'instructor-dashboard' %}active{% endif %}">
+      <a href="/practice" class="role-pill ">
         <span>🎓 Student View</span>
       </a>
       <a href="/instructor/dashboard" class="role-pill {% if nav == 'instructor' or nav == 'instructor-dashboard' %}active{% endif %}">
@@ -189,6 +190,79 @@
     </main>
   </div>
 </div>
+
+{% if nav != 'instructor' and nav != 'instructor-dashboard' and nav != 'tutor' and not hide_float_tutor %}
+<!-- Floating Math Tutor (Student View only; hidden on the full AI Tutor tab,
+     which has its own tutor panel): help on every other student page. -->
+<button type="button" class="float-tutor-btn" id="float-tutor-btn" aria-label="Open math tutor chat" aria-expanded="false">
+  <span class="float-tutor-icon" aria-hidden="true">&#129302;</span>
+  <span class="float-tutor-label">Ask Tutor</span>
+  <span class="float-tutor-unread" id="float-tutor-unread" aria-hidden="true"></span>
+</button>
+<div class="float-tutor-panel" id="float-tutor-panel" role="dialog" aria-label="Math tutor chat" aria-hidden="true">
+  <div class="float-tutor-drag" aria-hidden="true"></div>
+  <div class="float-tutor-head">
+    <span class="float-tutor-avatar" aria-hidden="true">&#129302;</span>
+    <div class="float-tutor-titles">
+      <strong>MathPilot Tutor <span class="float-tutor-online"><span class="dot" aria-hidden="true"></span>Online</span></strong>
+      <span class="float-tutor-stepstrip" id="float-tutor-stepstrip" aria-label="Problem progress"></span>
+    </div>
+    <button type="button" class="float-tutor-iconbtn" id="float-tutor-new" aria-label="Start a new problem" title="New problem">&#65291;</button>
+    <button type="button" class="float-tutor-iconbtn" id="float-tutor-min" aria-label="Minimize tutor panel" title="Minimize">&#8964;</button>
+    <button type="button" class="float-tutor-iconbtn" id="float-tutor-close" aria-label="Close tutor chat" title="Close">&#10005;</button>
+  </div>
+  <div class="float-tutor-graded" id="float-tutor-graded" hidden>Graded assignment: limited hints</div>
+  <div class="float-tutor-body" id="float-tutor-body" role="log" aria-live="polite" aria-label="Tutor conversation"></div>
+  <div class="float-tutor-quick" id="float-tutor-quick"></div>
+  <div class="float-tutor-input" id="float-tutor-input">
+    <div class="float-tutor-toolbar" id="float-tutor-mathkeys" role="toolbar" aria-label="Math symbols" hidden>
+      <div class="float-tutor-toolrow">
+        <button type="button" data-ins="()" data-tip="Parentheses" aria-label="Parentheses">( )</button>
+        <button type="button" data-ins="^()" data-tip="Power" aria-label="Power">x^n</button>
+        <button type="button" data-ins="^2" data-tip="Square" aria-label="Square">x²</button>
+        <button type="button" data-ins="sqrt()" data-tip="Square root" aria-label="Square root">√</button>
+        <button type="button" data-ins="||" data-insel="1" data-tip="Absolute value" aria-label="Absolute value">|x|</button>
+        <button type="button" data-ins="+/-" data-tip="Plus-minus" aria-label="Plus-minus">±</button>
+        <button type="button" data-ins="/" data-tip="Divide" aria-label="Divide">/</button>
+        <span class="float-tutor-sep" aria-hidden="true"></span>
+        <button type="button" data-ins="pi" data-tip="Pi" aria-label="Pi">π</button>
+        <button type="button" data-ins="e" data-tip="Euler's number" aria-label="Euler's number">e</button>
+        <button type="button" data-ins="oo" data-tip="Infinity" aria-label="Infinity">∞</button>
+        <button type="button" data-ins="theta" data-tip="Theta" aria-label="Theta">θ</button>
+        <span class="float-tutor-sep" aria-hidden="true"></span>
+        <button type="button" data-ins="sin()" data-tip="Sine" aria-label="Sine">sin</button>
+        <button type="button" data-ins="cos()" data-tip="Cosine" aria-label="Cosine">cos</button>
+        <button type="button" data-ins="tan()" data-tip="Tangent" aria-label="Tangent">tan</button>
+        <button type="button" data-ins="ln()" data-tip="Natural log" aria-label="Natural log">ln</button>
+        <button type="button" data-ins="log()" data-tip="Logarithm" aria-label="Logarithm">log</button>
+        <span class="float-tutor-sep" aria-hidden="true"></span>
+        <button type="button" data-ins="lim" data-tip="Limit" aria-label="Limit">lim</button>
+        <button type="button" data-ins="d/dx " data-tip="Derivative" aria-label="Derivative">d/dx</button>
+        <button type="button" data-ins="integral" data-tip="Integral" aria-label="Integral">∫</button>
+        <span class="float-tutor-sep" aria-hidden="true"></span>
+        <button type="button" data-ins="<=" data-tip="Less than or equal" aria-label="Less than or equal">≤</button>
+        <button type="button" data-ins=">=" data-tip="Greater than or equal" aria-label="Greater than or equal">≥</button>
+        <button type="button" data-ins="!=" data-tip="Not equal" aria-label="Not equal">≠</button>
+        <button type="button" data-ins="->" data-tip="Arrow" aria-label="Arrow">→</button>
+      </div>
+    </div>
+    <div class="float-tutor-preview" id="float-tutor-preview" aria-hidden="true" hidden></div>
+    <div class="float-tutor-fieldrow">
+      <button type="button" class="float-tutor-fx" id="float-tutor-fx" aria-label="Toggle math symbols" aria-expanded="false" title="Math symbols">fx</button>
+      <textarea id="float-tutor-text" placeholder="Type an equation or your answer..." maxlength="500" rows="1" aria-label="Type your message"></textarea>
+      <span class="float-tutor-count" id="float-tutor-count" aria-hidden="true"></span>
+      <button type="button" class="float-tutor-send" id="float-tutor-send" aria-label="Send message">Send</button>
+    </div>
+    <div class="float-tutor-confirm" id="float-tutor-confirm" hidden>
+      <button type="button" data-confirm="yes">Start new problem</button>
+      <button type="button" data-confirm="no">No, it's my answer</button>
+    </div>
+  </div>
+  <button type="button" class="float-tutor-retry" id="float-tutor-retry" hidden>Connection lost, tap to retry</button>
+</div>
+<script src="/static/js/float-tutor.js?v=2"></script>
+{% endif %}
+
 
 </body>
 </html>

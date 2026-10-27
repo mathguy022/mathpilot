@@ -18,14 +18,19 @@ from sympy.parsing.sympy_parser import (
 MAX_LEN = 2000  # LaTeX is verbose; length still bounded
 TRANSFORMATIONS = standard_transformations + (implicit_multiplication_application,)
 
-_ALLOWED_RE = re.compile(r"^[0-9a-zA-Z\s\+\-\*\/\^\(\)\.,=d_\{\}:]+$")
+_ALLOWED_RE = re.compile(r"^[0-9a-zA-Z\s\+\-\*\/\^\(\)\.,=d_\{\}:<>!|]+$")
 
 # Unicode math symbols students may type or paste -> ASCII equivalents.
 _UNICODE_MAP = {
     "π": "pi", "⋅": "*", "·": "*", "×": "*", "÷": "/",
     "²": "^2", "³": "^3", "⁴": "^4",
+    "⁵": "^5", "⁶": "^6", "⁷": "^7", "⁸": "^8", "⁹": "^9",
+    "⁰": "^0", "¹": "^1",
     "−": "-", "–": "-", "—": "-",
+    "≤": "<=", "≥": ">=", "≠": "!=",
+    "∞": "oo",
     "⅓": "(1/3)", "⅔": "(2/3)", "½": "(1/2)", "¼": "(1/4)",
+    "√": "sqrt", "θ": "theta",
 }
 
 _LATEX_CMDS = {
@@ -48,15 +53,17 @@ def normalize_math(text: str) -> str:
     t = t.replace("\\\\", "\\")
     for uni, asc in _UNICODE_MAP.items():
         t = t.replace(uni, asc)
-    # \frac{a}{b} -> (a)/(b); repeat for nesting
-    for _ in range(5):
+    # \frac{a}{b} -> (a)/(b) and \sqrt{a} -> sqrt(a), alternated until stable:
+    # converting roots afterwards left \frac{sqrt(...)}{x} unmatched by the
+    # flat-brace pattern, and the later braces->parens pass turned the
+    # quotient into a product.
+    for _ in range(6):
         new = re.sub(r"\\d?frac\{([^{}]+)\}\{([^{}]+)\}", r"(\1)/(\2)", t)
+        new = re.sub(r"\\sqrt\[([^\]]+)\]\{([^{}]+)\}", r"(\2)**(1/(\1))", new)
+        new = re.sub(r"\\sqrt\{([^{}]+)\}", r"sqrt(\1)", new)
         if new == t:
             break
         t = new
-    # \sqrt{a} -> sqrt(a), \sqrt[n]{a} -> (a)**(1/n)
-    t = re.sub(r"\\sqrt\[([^\]]+)\]\{([^{}]+)\}", r"(\2)**(1/(\1))", t)
-    t = re.sub(r"\\sqrt\{([^{}]+)\}", r"sqrt(\1)", t)
     for cmd, rep in _LATEX_CMDS.items():
         t = t.replace(cmd, rep)
     # \text{...} / \mathrm{...} wrappers first: unwrap before braces->parens
@@ -72,9 +79,40 @@ def normalize_math(text: str) -> str:
     t = re.sub(r"\bd\s+([a-zA-Z])", r"d\1", t)
     # strip any remaining unknown \command (safe: drop, don't execute)
     t = re.sub(r"\\[a-zA-Z]+", "", t)
+    # trig powers: cos^2 x -> cos(x)**2 ; cos^2(x) -> cos(x)**2.
+    # Handles sin/cos/tan/sec/csc/cot (+ a-prefixed inverses). The direct
+    # ** form avoids implicit-multiplication splitting 'cos (x)' later.
+    t = re.sub(
+        r"(?<![a-zA-Z])(a?sin|a?cos|a?tan|sec|csc|cot)\s*\^\s*(\d+)"
+        r"(?:\s*\(\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\)|\s+([a-zA-Z][a-zA-Z0-9_]*))",
+        lambda m: f"{m.group(1)}({m.group(3) or m.group(4)})**{m.group(2)}",
+        t,
+    )
+    # bare trig/ln/log of a variable: cos x -> cos(x); ln x -> ln(x).
+    # Skip names already followed by '(' (e.g. output of the power rule).
+    # (?<![a-zA-Z]) not \b: the name may follow a digit ('3cos x').
+    t = re.sub(
+        r"(?<![a-zA-Z])(sin|cos|tan|sec|csc|cot|asin|acos|atan|ln|log|exp|sqrt)"
+        r"(?!\s*\()\s+([a-zA-Z][a-zA-Z0-9_]*)",
+        r"\1(\2)",
+        t,
+    )
+    # fused function-argument: sin2x -> sin(2*x).
+    t = re.sub(
+        r"\b(sin|cos|tan|sec|csc|cot|asin|acos|atan|ln|log|exp)\s*"
+        r"(\d+)\s*([a-zA-Z][a-zA-Z0-9_]*)",
+        r"\1(\2*\3)",
+        t,
+    )
+    # e^x stays exp-shaped; bare e (Euler) -> E for SymPy.
+    t = re.sub(r"(?<![a-zA-Z])e(?![a-zA-Z0-9_(])", "E", t)
+    # |x| -> Abs(x) (single pair only; nested bars stay unparseable).
+    t = re.sub(r"\|([^|()=<>!]+)\|", r"Abs(\1)", t)
     # separate known constants/functions glued to variables: pir -> pi*r.
     # The negative lookbehind avoids splitting 'sin(' into 'sin*('.
-    for const in ("pi", "sqrt", "sin", "cos", "tan", "log", "ln", "exp"):
+    for const in ("pi", "sqrt", "sin", "cos", "tan", "sec", "csc",
+                  "cot", "asin", "acos", "atan", "log", "ln", "exp",
+                  "theta", "oo"):
         t = re.sub(rf"(?<![a-zA-Z]){const}(?=[a-zA-Z])", const + "*", t)
     # protect derivative tokens (dr, dt, dx...) from implicit-multiplication split
     t = re.sub(r"\bd([a-zA-Z])\b", r"DERIV\1", t)
@@ -183,6 +221,193 @@ def _items_equal(s_item, e_item) -> bool:
     return False
 
 
+def _parse_solution_set(text: str) -> list:
+    """Parse 'u = 1/2 or u = 1' / '{0, pi/3}' / 'x=2, x=3' into values."""
+    t = (text or "").strip().strip('"').strip("'")
+    t = re.sub(r"^\{\s*(.*?)\s*\}$", r"\1", t)  # {a, b} -> a, b
+    t = re.sub(r"\bor\b", ",", t, flags=re.IGNORECASE)
+    parts = _split_top_level(t)
+    vals = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        val = p.split("=", 1)[1] if "=" in p else p
+        try:
+            vals.append(_parse_single(val))
+        except Exception:
+            return []  # signal unparseable to caller via empty + check
+    return vals
+
+
+def check_solution_set(student: str, expected: str,
+                       tol: float = 1e-9) -> Verdict:
+    """Same solution set: order/'or'/braces insensitive, exact forms."""
+    if not (student or "").strip():
+        return Verdict("incomplete", "Empty response — please enter a step.")
+    try:
+        s_vals = _parse_solution_set(student)
+        e_vals = _parse_solution_set(expected)
+    except Exception as exc:
+        return Verdict("unverifiable", f"Could not parse input safely: {exc}")
+    if not s_vals or not e_vals:
+        return Verdict("unverifiable", "Could not parse the solution set.")
+    if len(s_vals) < len(e_vals):
+        # Correct but incomplete: one of several solutions.
+        unmatched = list(e_vals)
+        for s_item in s_vals:
+            hit = next((e for e in unmatched if _items_equal(s_item, e)), None)
+            if hit is None:
+                return Verdict("incorrect",
+                               "Not equivalent to the expected step yet.")
+            unmatched.remove(hit)
+        return Verdict("incomplete", "You found one solution. "
+                                     "Is there another?")
+    if len(s_vals) != len(e_vals):
+        return Verdict("incorrect", "Not equivalent to the expected step yet.")
+    unmatched = list(e_vals)
+    for s_item in s_vals:
+        hit = next((e for e in unmatched if _items_equal(s_item, e)), None)
+        if hit is None:
+            return Verdict("incorrect",
+                           "Not equivalent to the expected step yet.")
+        unmatched.remove(hit)
+    return Verdict("correct", "Matches the expected solution set.")
+
+
+def check_factored(student: str, expected: str) -> Verdict:
+    """Factored form: equivalent AND actually factored (not just expanded)."""
+    # A trailing "= 0" on the expected answer is a display convention,
+    # not part of the factored form: compare against the LHS.
+    exp = expected.strip()
+    if exp.endswith("= 0") or exp.endswith("=0"):
+        exp = exp.rsplit("=", 1)[0]
+    base = check_equivalent(student, exp)
+    if base.status != "correct":
+        if not (student or "").strip():
+            return Verdict("incomplete", "Empty response — please enter a step.")
+        return base
+    # Factored means: contains a parenthesized product or power of one,
+    # and is not a bare expanded polynomial.
+    t = normalize_math(student if "=" not in student
+                       else student.split("=", 1)[0]
+                       if student.split("=", 1)[0].strip() not in ("", "0")
+                       else student.split("=", 1)[1])
+    has_product = bool(re.search(r"\)\s*[\*]?\s*\(|\)\s*\*\*?\s*\(?", t))
+    has_paren = "(" in t
+    if has_paren and (has_product or "**" in t or "^" in t):
+        return Verdict("correct", "Correct factored form.", base.normalized)
+    return Verdict("incorrect",
+                   "That's equivalent but not factored — "
+                   "write it as a product of factors.")
+
+
+def check_numeric_value(student: str, expected: str,
+                        tol: float = 1e-9) -> Verdict:
+    """Numeric comparison within tolerance."""
+    try:
+        s = _parse_single(student.split("=", 1)[1]
+                          if "=" in student else student)
+        e = _parse_single(expected.split("=", 1)[1]
+                          if "=" in expected else expected)
+        sv, ev = float(s.evalf()), float(e.evalf())
+    except Exception as exc:
+        return Verdict("unverifiable", f"Could not parse input safely: {exc}")
+    if abs(sv - ev) <= tol:
+        return Verdict("correct", "Numeric value matches.")
+    return Verdict("incorrect", "Not equivalent to the expected step yet.")
+
+
+def check_derivative(student: str, expected: str) -> Verdict:
+    """Derivative step: symbolic equality of the two expressions."""
+    return check_equivalent(student, expected)
+
+
+def check_integral(student: str, expected: str) -> Verdict:
+    """Antiderivative step: differentiate student, compare to integrand.
+
+    Here `expected` is the integrand and `student` the proposed
+    antiderivative (+C tolerated by construction: d(+C)/dx = 0).
+    """
+    try:
+        x = sp.Symbol("x")
+        s = _parse_single(student.split("=", 1)[1]
+                          if "=" in student else student)
+        e = _parse_single(expected)
+        diff = sp.simplify(sp.diff(s, x) - e)
+        if diff == 0:
+            return Verdict("correct", "Valid antiderivative (up to constant).")
+        if _numeric_confirm(sp.diff(s, x), e):
+            return Verdict("correct", "Valid antiderivative (up to constant).")
+        return Verdict("incorrect", "Not equivalent to the expected step yet.")
+    except Exception as exc:
+        return Verdict("unverifiable", f"Could not parse input safely: {exc}")
+
+
+def check_limit(student: str, expected: str) -> Verdict:
+    """Limit step: value equality; accepts DNE/infinity wording."""
+    dne = {"dne", "does not exist", "undefined", "infinity", "inf",
+           "-infinity", "-inf", "oo", "-oo"}
+    s_low = (student or "").strip().lower()
+    e_low = (expected or "").strip().lower()
+    if s_low in dne or e_low in dne:
+        if s_low in dne and e_low in dne:
+            # Both non-finite: match signs loosely (inf vs oo).
+            neg_s = s_low.startswith("-")
+            neg_e = e_low.startswith("-")
+            if neg_s == neg_e:
+                return Verdict("correct", "Matches the expected limit.")
+            return Verdict("incorrect",
+                           "Not equivalent to the expected step yet.")
+        return Verdict("incorrect", "Not equivalent to the expected step yet.")
+    return check_equivalent(student, expected)
+
+
+def check_step_typed(expected: str, student: str,
+                     check_type: str = "equivalent_expression") -> Verdict:
+    """Dispatch one guided-step check by check_type (software decides)."""
+    ct = (check_type or "equivalent_expression").strip().lower()
+    if ct == "solution_set":
+        return check_solution_set(student, expected)
+    if ct == "factored_form":
+        return check_factored(student, expected)
+    if ct == "numeric_value":
+        return check_numeric_value(student, expected)
+    if ct == "derivative":
+        return check_derivative(student, expected)
+    if ct == "integral":
+        return check_integral(student, expected)
+    if ct == "limit":
+        return check_limit(student, expected)
+    if ct in ("identity_step", "equivalent_expression",
+              "equivalent_equation"):
+        return check_equivalent(student, expected)
+    # Unknown types incl. "conceptual": caller handles LLM two-pass.
+    return check_equivalent(student, expected)
+
+
+def display_math(text: str) -> str:
+    """Small pretty-printer for tutor replies (common cases only).
+
+    Converts CAS spellings to clean display: '2*x - 1' -> '2x - 1',
+    'x**2' -> 'x^2', 'cos(x)' stays, 'pi' -> 'π'. Not a full
+    CAS-to-display renderer; unknown shapes pass through unchanged.
+    """
+    t = "" if text is None else str(text)
+    # Drop explicit * in coefficient/variable juxtaposition: 2*x -> 2x.
+    t = re.sub(r"(?<![a-zA-Z0-9_.])(\d+)\s*\*\s*(?=[a-zA-Z(pi])", r"\1", t)
+    t = re.sub(r"\*\s*(?=[a-zA-Z(])", "", t)
+    # ** power -> ^ power.
+    t = re.sub(r"\*\*(\d+)", r"^\1", t)
+    t = re.sub(r"\*\*\(([^()]*)\)", r"^(\1)", t)
+    # pi symbol (word-boundary safe).
+    t = re.sub(r"(?<![a-zA-Z])pi(?![a-zA-Z])", "π", t)
+    t = re.sub(r"(?<![a-zA-Z])theta(?![a-zA-Z])", "θ", t)
+    t = re.sub(r"(?<![a-zA-Z])oo(?![a-zA-Z])", "∞", t)
+    t = re.sub(r"\bsqrt\(([^()]*)\)", r"√(\1)", t)
+    return t.strip()
+
+
 def check_numeric(student: str, expected: float, tol: float = 1e-6) -> Verdict:
     try:
         s = _safe_parse(student)
@@ -266,7 +491,12 @@ def _strip_latex_environments(text: str) -> str:
 
 
 def detect_mode(question) -> str:
-    """Explicit routing from step objective_tags. Falls back to 'equiv'."""
+    """Explicit routing from step objective_tags. Falls back to 'equiv'.
+
+    A limit written in the prompt ("\\lim_{x \\to 1} x") is untagged but has a
+    canonical solver, and the equivalence fallback would grade its correct
+    value as wrong, so the prompt itself outranks the generic fallback.
+    """
     seen: list[str] = []
     for step in question.steps:
         for tag in step.objective_tags:
@@ -274,6 +504,11 @@ def detect_mode(question) -> str:
             if mode and mode not in seen:
                 seen.append(mode)
     if not seen:
+        # "\b" cannot end \lim here: the usual form is \lim_{...}, and "_" is
+        # a word character, so the guard is "no letter follows".
+        if re.search(r"\\lim(?![a-zA-Z])",
+                     str(getattr(question, "prompt_latex", "") or "")):
+            return "limit"
         return "equiv"
     # Prefer the most specific handler when tags mix.
     for preferred in ("system", "equation", "deriv", "integ",
@@ -608,3 +843,42 @@ def verify_canonical(question) -> Verdict:
         return check_equivalent(question.final_answer_latex,
                                 question.steps[-1].expected_input_latex)
     return Verdict("unverifiable", "Nothing to verify.")
+
+
+def canonical_answer(problem: str) -> list[str]:
+    """SymPy's own answer(s) to a problem, for reply leak checks.
+
+    Only the shapes the canonical solvers cover: a limit's value and an
+    equation's solution set. Empty when neither applies — a bare expression
+    ("3x-9") has no single answer, and guessing one would censor correct
+    guidance.
+    """
+    text = (problem or "").strip()
+    if not text:
+        return []
+    try:
+        m = _LIMIT_RE.search(text)
+        if m:
+            point_raw = m.group(2).strip()
+            if re.fullmatch(r"\\{1,2}infty", point_raw):
+                point = sp.oo
+            elif re.fullmatch(r"-\s*\\{1,2}infty", point_raw):
+                point = -sp.oo
+            else:
+                point = _parse_single(point_raw)
+            val = sp.simplify(
+                sp.limit(_parse_single(m.group(3)), sp.Symbol(m.group(1)),
+                        point))
+            return [display_math(val)]
+    except Exception:
+        return []
+    if "=" not in text:
+        return []
+    try:
+        eqs, syms = _eq_objects(text)
+        if not eqs or not syms or len(eqs) > 1:
+            return []
+        return [display_math(sp.simplify(sol))
+                for sol in sp.solve(eqs[0], syms, dict=False)]
+    except Exception:
+        return []

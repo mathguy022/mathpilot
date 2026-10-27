@@ -136,3 +136,14 @@ def test_canonical_gate_rejects_bad_answer():
     ok, reasons = verify_question_canonical(q)
     assert not ok
     assert reasons
+
+
+def test_display_math_keeps_zero():
+    """display_math took its argument through `text or ""`, so 0 vanished."""
+    import sympy as sp
+
+    from app.verifier import canonical_answer, display_math
+
+    assert display_math(sp.Integer(0)) == "0"
+    assert canonical_answer(
+        r"\lim_{x \to 0} \frac{\sqrt{x+4} - 2}{x}") == ["1/4"]
