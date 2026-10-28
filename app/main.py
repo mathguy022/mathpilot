@@ -2011,22 +2011,15 @@ def api_get_lesson(link_id: str):
 
 
 @app.get("/api/analytics")
-def api_analytics(db: Session = Depends(get_db)):
-    attempts = db.query(Attempt).all()
-    by_step: dict[str, dict] = {}
-    for a in attempts:
-        key = f"activity {a.activity_id} · step {a.step_index + 1}"
-        cell = by_step.setdefault(key, {"attempts": 0, "incorrect": 0})
-        cell["attempts"] += 1
-        if a.verdict == "incorrect":
-            cell["incorrect"] += 1
-    insights = [
-        {"label": k, **v,
-         "rate": round(v["incorrect"] / v["attempts"], 2) if v["attempts"] else 0}
-        for k, v in by_step.items()
-    ]
-    return {"insights": sorted(insights, key=lambda r: r["rate"], reverse=True),
-            "demo_hint_requests": db.query(HintRequest).count()}
+def api_analytics(course: str = "", db: Session = Depends(get_db)):
+    """Instructor insights, aggregated from the tutor's own event log.
+
+    Rates cover only the steps SymPy decided; unread responses are counted
+    beside them rather than folded into a percentage.
+    """
+    from . import insights
+
+    return insights.build(db, course=course.strip() or None)
 
 
 @app.get("/health")

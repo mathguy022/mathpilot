@@ -14,8 +14,18 @@
     <table><tr><th>Student</th><th>Role</th><th>Mastery</th></tr>
     {% for s in students %}<tr><td>👤 {{ s.name }}</td><td class="muted">{{ s.role }}</td><td>{% if s.id==1 and mastery %}{% for m in mastery %}<div>{{ m.topic }} <div class="bar"><i style="width:{{ m.score }}%"></i></div></div>{% endfor %}{% else %}<span class="muted">no attempts yet</span>{% endif %}</td></tr>{% endfor %}</table>
   </div>
-  <div class="card"><h3>Common Topics of Struggle (observed)</h3><div id="insights"><p class="muted">Loading analytics from /api/analytics…</p></div>
-  <div class="row"><a class="btn small ghost" href="/instructor/dashboard">＋ New Assignment</a><button class="btn small ghost" onclick="alert('Export: analytics JSON is downloadable at /api/analytics')">⤓ Export Report</button></div></div>
+  <div class="card"><h3>Where students struggle</h3>
+    <p class="muted">Aggregated from the AI tutor's own event log. Rates cover only the steps SymPy could decide, and the denominator is always shown.</p>
+    <div class="row" style="margin-bottom:10px">
+      <label class="muted" for="ins-course">Course</label>
+      <select id="ins-course" onchange="loadInsights()" style="border:1px solid #cbd5e1;border-radius:8px;padding:6px 10px;font-size:13px">
+        <option value="">All courses</option>
+      </select>
+      <button type="button" class="btn small ghost" onclick="exportInsights()">⤓ Export JSON</button>
+      <a class="btn small ghost" href="/instructor/dashboard">＋ New Assignment</a>
+    </div>
+    <div id="insights"><p class="muted">Loading insights from /api/analytics…</p></div>
+  </div>
 </div>
 <div class="card" style="margin-top:16px"><h3>AI Question Drafts (verified, need approval)</h3>
 <p class="muted">Generate candidate questions from your notes. Verified drafts still require your review — use the <a href="/instructor/dashboard">Builder</a> to create an assignment from them.</p>
@@ -25,9 +35,65 @@
 <table><tr><th>When</th><th>Activity</th><th>Step</th><th>Response</th><th>Verdict</th></tr>
 {% for t in attempts %}<tr><td>{{ t.created_at }}</td><td>{{ t.activity_id }}</td><td>{{ t.step_index+1 }}</td><td><code>{{ t.student_response }}</code></td><td><span class="badge {{ t.verdict }}">{{ t.verdict }}</span></td></tr>{% else %}<tr><td colspan="5" class="muted">Empty state — no attempts yet. Have a student submit work from the Practice page.</td></tr>{% endfor %}</table></div>
 <div class="card" style="margin-top:16px"><h3>Assignments</h3><p class="muted">Assigned packages live in the <a href="/instructor/dashboard">Builder</a> (Review, Publish & Assign) and <a href="/instructor/drafts">Saved Drafts</a>. Students see them under <a href="/assignments">Assignments</a>.</p></div>
-<script>fetch('/api/analytics').then(r=>r.json()).then(j=>{ const el=document.getElementById('insights');
- if(!j.insights.length){ el.innerHTML='<p class="muted">No data yet — insights appear after students submit steps.</p>'; return; }
- el.innerHTML='<table><tr><th>Step</th><th>Attempts</th><th>Incorrect</th><th>Error rate</th></tr>'+j.insights.map(i=>'<tr><td>'+i.label+'</td><td>'+i.attempts+'</td><td>'+i.incorrect+'</td><td>'+Math.round(i.rate*100)+'%</td></tr>').join('')+'</table><p><small class="muted">Observed error rates only — not proof of misconceptions. Denominators shown.</small></p>'; });</script>
+<script>
+let INS=null;
+function esc(s){ return String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function pct(r){ return Math.round((r||0)*100)+'%'; }
+function pl(n,w){ n=n||0; return n+' '+(n===1?w:w+'s'); }
+async function loadInsights(){ const el=document.getElementById('insights');
+ el.innerHTML='<p class="muted">Loading…</p>';
+ try{ const r=await fetch('/api/analytics?course='+encodeURIComponent(currentScope()));
+  if(!r.ok) throw new Error('failed');
+  INS=await r.json(); fillCourseFilter(); renderInsights();
+ }catch(e){ el.innerHTML='<p class="muted">Could not load insights.</p>'; } }
+function fillCourseFilter(){ const sel=document.getElementById('ins-course'); if(!sel||!INS) return;
+ const have=new Set([...sel.options].map(o=>o.value));
+ (INS.courses||[]).forEach(c=>{ if(have.has(c.course)) return;
+  const o=document.createElement('option'); o.value=c.course; o.textContent=c.course; sel.appendChild(o); }); }
+function currentScope(){ const sel=document.getElementById('ins-course');
+ return sel?sel.value:''; }
+function renderInsights(){ const el=document.getElementById('insights'); if(!INS){ return; }
+ const c=INS.coverage;
+ if(!c.sessions){ el.innerHTML='<p class="muted">No guided-tutor sessions recorded yet — insights appear once students work with the AI tutor.</p>'; return; }
+ let h='<p class="muted" style="font-size:12px">'+pl(c.sessions,'session')+' · '+pl(c.students,'student')+
+  ' · '+pl(c.steps_decided,'step')+' decided by SymPy · '+c.steps_undecided+
+  ' unread · '+(esc(INS.window.since)||'—')+' → '+(esc(INS.window.through)||'—')+'</p>';
+ if(currentScope()==='' && (INS.courses||[]).length>1){
+  h+='<table><tr><th>Course</th><th>Sessions</th><th>Steps decided</th><th>Incorrect</th><th>Rate</th><th>Unread</th><th>Abandoned</th></tr>'+
+   INS.courses.map(r=>'<tr><td>'+esc(r.course)+'</td><td>'+r.sessions+'</td><td>'+r.steps_decided+
+    '</td><td>'+r.incorrect+'</td><td>'+pct(r.error_rate)+'/'+r.steps_decided+'</td><td>'+r.undecided+
+    '</td><td>'+r.abandoned_sessions+'</td></tr>').join('')+'</table>'; }
+ h+='<h4>Stall points</h4>';
+ const sp=INS.insights.filter(r=>r.seen>0);
+ h+= sp.length? '<table><tr><th>Step</th><th>Seen</th><th>Incorrect</th><th>Error rate</th><th></th></tr>'+
+   sp.map(r=>'<tr><td>'+esc(r.label)+'</td><td>'+r.seen+'</td><td>'+r.incorrect+'</td><td>'+pct(r.rate)+
+    '</td><td><div class="bar"><i style="width:'+Math.round(r.rate*100)+'%"></i></div></td></tr>').join('')+
+   '</table>' : '<p class="muted">No graded steps in this scope yet.</p>';
+ const a=INS.assistance;
+ h+='<h4>How much help it took</h4><p style="font-size:13px">'+pl(a.hint_requests,'hint')+
+  ' asked for across '+pl(a.sessions_needing_hints,'session')+' · ladder reached: '+
+  (a.hint_ladder.length? a.hint_ladder.map(l=>'H'+l.level+': '+l.seen).join(' · ') : 'none')+
+  ' · '+pl(a.corrective_hints,'nudge')+' after a wrong step · '+a.hint_capped+' hit the hint cap · '+pl(a.answer_requests,'request')+' for the answer outright · '+
+  a.completed_sessions+' completed, '+a.abandoned_sessions+' abandoned · '+
+  a.mean_misses_per_session+' misses per session on average</p>';
+ h+='<h4>Repeated wrong answers (leads, not conclusions)</h4>';
+ const rc=INS.recurring_candidates;
+ h+= rc.length? '<table><tr><th>Course</th><th>Step</th><th>Response</th><th>Times</th><th>Students</th></tr>'+
+   rc.map(r=>'<tr><td>'+esc(r.course)+'</td><td>'+r.step+'</td><td><code>'+esc(r.response)+
+    '</code></td><td>'+r.occurrences+'</td><td>'+r.students+'</td></tr>').join('')+'</table>'
+   : '<p class="muted">Nothing repeated twice at the same step yet.</p>';
+ h+='<ul style="font-size:12px;color:var(--muted);margin:10px 0 0 18px">'+
+   INS.limitations.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ul>';
+ el.innerHTML=h; }
+function exportInsights(){ if(!INS) return; const scope=currentScope();
+ const blob=new Blob([JSON.stringify(scope?{...INS, scope}:INS, null, 2)],
+  {type:'application/json'}); const a=document.createElement('a');
+ a.href=URL.createObjectURL(blob); a.download='mathpilot-insights-'+
+  (scope||'all-courses').toLowerCase().replace(/[^a-z0-9]+/g,'-')+'.json';
+ document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href); }
+window.addEventListener('load', loadInsights);
+</script>
 <script>async function genQuestions(){ const out=document.getElementById('gen-out');
  out.innerHTML='<p class="muted">Generating…</p>';
  try{ const r=await fetch('/api/generate-questions',{method:'POST',headers:{'Content-Type':'application/json'},
