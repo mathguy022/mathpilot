@@ -9,10 +9,19 @@ os.environ["DEMO_MODE"] = "true"
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
-from app.db import SessionLocal, Activity, Attempt  # noqa: E402
+from app import auth  # noqa: E402
+from app.db import SessionLocal, Activity, Attempt, User  # noqa: E402
 from tests.test_planc_workflow import LESSON as PLAN_LESSON  # noqa: E402
 
 client = TestClient(app)
+
+
+def _instructor_id() -> int:
+    db = SessionLocal()
+    try:
+        return db.query(User).filter(User.role == "instructor").first().id
+    finally:
+        db.close()
 
 
 @pytest.fixture
@@ -95,9 +104,14 @@ def test_hint_levels_progress(cone_activity):
 def test_analytics_reflects_records(cone_activity):
     client.post("/api/submit", json={"activity_id": cone_activity, "step_index": 0,
                                      "response": "wrong", "hint_level": 0})
-    r = client.get("/api/analytics")
-    assert r.status_code == 200
-    assert "insights" in r.json()
+    # Insights are instructor-only; sign in as the roster's instructor.
+    client.cookies.set(auth.COOKIE, auth.issue(_instructor_id()))
+    try:
+        r = client.get("/api/analytics")
+        assert r.status_code == 200
+        assert "insights" in r.json()
+    finally:
+        client.cookies.clear()
 
 
 def test_assignments_tab_lists_assigned_packages():

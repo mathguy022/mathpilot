@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}MathPilot{% endblock %} · AI Math Teaching & Learning</title>
-<link rel="stylesheet" href="/static/styles.css?v=5">
+<link rel="stylesheet" href="/static/styles.css?v=6">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mathlive@0.111.1/mathlive-static.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mathlive@0.111.1/mathlive-fonts.css">
@@ -77,23 +77,26 @@
       <span class="notif-dot"></span>
     </button>
 
-    {% if nav == 'instructor' or nav == 'instructor-dashboard' %}
-    <div class="user-profile" title="Signed in as Dr. Lee (Instructor)">
-      <div class="user-avatar" style="background:#0f766e;">DL</div>
-      <span class="user-name">
-        Dr. Lee
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-      </span>
-    </div>
-    {% else %}
-    <div class="user-profile" title="Signed in as Maya (Student)">
-      <div class="user-avatar">MY</div>
-      <span class="user-name">
-        Maya
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-      </span>
-    </div>
-    {% endif %}
+    <details class="viewer-pop">
+      <summary class="user-profile"
+               title="{% if viewer %}Viewing as {{ viewer.name }} ({{ viewer.role }}){% else %}No identity set{% endif %}">
+        <div class="user-avatar" {% if viewer and viewer.role == 'instructor' %}style="background:#0f766e;"{% endif %}>{{ viewer_initials }}</div>
+        <span class="user-name">
+          {% if viewer %}{{ viewer.name }}{% else %}View as…{% endif %}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+        </span>
+      </summary>
+      <form method="post" action="/view-as" class="viewer-form">
+        <input type="hidden" name="back" value="{{ request.url.path }}">
+        <p class="viewer-note">Demo identity, not a login. Class insights are instructor-only.</p>
+        {% for u in roster %}
+        <button type="submit" name="user_id" value="{{ u.id }}"
+                class="viewer-opt {% if viewer and viewer.id == u.id %}on{% endif %}">
+          {{ u.name }} <small>{{ u.role }}</small></button>
+        {% endfor %}
+        <button type="submit" name="user_id" value="0" class="viewer-opt">Sign out</button>
+      </form>
+    </details>
   </div>
 </header>
 

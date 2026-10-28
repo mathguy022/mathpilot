@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from . import config
+from . import auth
 from .db import (
     Assignment, ensure_schema, get_db, init_db, Activity, Attempt, Course, CourseMaterial,
     HintRequest, Lesson, Mastery, Publication, ReviewRequest, Submission,
@@ -23,6 +24,7 @@ BASE = Path(__file__).resolve().parent.parent
 app = FastAPI(title="MathPilot")
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE / "templates"))
+auth.add_viewer_context(templates)
 
 init_db()
 ensure_schema()
@@ -1783,10 +1785,29 @@ def material_add(title: str = Form(...), kind: str = Form("note"),
 
 @app.get("/progress", response_class=HTMLResponse)
 def progress(request: Request, db: Session = Depends(get_db)):
-    attempts = db.query(Attempt).filter(Attempt.user_id == 1).order_by(Attempt.id.desc()).all()
-    mastery = db.query(Mastery).filter(Mastery.user_id == 1).all()
+    """A student's own record. The viewer's identity picks whose rows appear,
+    so switching accounts cannot surface another student's work."""
+    who = auth.viewer_or_demo_student(request, db)
+    attempts = db.query(Attempt).filter(
+        Attempt.user_id == who.id).order_by(Attempt.id.desc()).all()
+    mastery = db.query(Mastery).filter(Mastery.user_id == who.id).all()
     return templates.TemplateResponse(request, "progress.html", {"request": request, "attempts": attempts,
                                        "mastery": mastery, "demo": not config.ai_configured()})
+
+
+@app.post("/view-as")
+def view_as(user_id: int = Form(...), back: str = Form("/"),
+            db: Session = Depends(get_db)):
+    """Demo identity switch; 0 signs out. See app/auth.py — this is a role
+    boundary, not a login. `back` must be a path on this site, so the form
+    cannot be turned into an off-site redirect."""
+    dest = back if back.startswith("/") and not back.startswith("//") else "/"
+    if user_id == 0:
+        return auth.clear_viewer(RedirectResponse(dest, status_code=303))
+    target = db.query(User).filter(User.id == user_id).first()
+    if target is None:
+        raise HTTPException(404, "No such roster user")
+    return auth.set_viewer(RedirectResponse(dest, status_code=303), target)
 
 
 @app.get("/courses", response_class=HTMLResponse)
@@ -2011,11 +2032,14 @@ def api_get_lesson(link_id: str):
 
 
 @app.get("/api/analytics")
-def api_analytics(course: str = "", db: Session = Depends(get_db)):
+def api_analytics(request: Request, course: str = "",
+                  teacher: User = Depends(auth.require_instructor),
+                  db: Session = Depends(get_db)):
     """Instructor insights, aggregated from the tutor's own event log.
 
     Rates cover only the steps SymPy decided; unread responses are counted
-    beside them rather than folded into a percentage.
+    beside them rather than folded into a percentage. Instructor-only: the
+    payload carries student-typed responses.
     """
     from . import insights
 

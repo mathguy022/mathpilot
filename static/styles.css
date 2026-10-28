@@ -220,6 +220,55 @@ a:hover { text-decoration: none; }
   gap: 4px;
 }
 
+/* View as: demo identity picker with a real server-side role boundary */
+.viewer-pop { position: relative; }
+.viewer-pop > summary { list-style: none; }
+.viewer-pop > summary::-webkit-details-marker { display: none; }
+.viewer-form {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 40;
+  min-width: 240px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .14);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.viewer-note {
+  margin: 0 0 2px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.viewer-opt {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--navy);
+  text-align: left;
+  cursor: pointer;
+}
+.viewer-opt:hover { background: #f8f9fe; border-color: var(--border); }
+.viewer-opt small {
+  font-weight: 500;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.viewer-opt.on { background: var(--purple-soft); border-color: var(--purple-border); }
+
 /* Sidebar */
 .sidebar {
   width: 230px;
@@ -1452,6 +1501,10 @@ math-field:focus-within {
   .sidebar { width: 100%; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--border); }
   .main-content { padding: 16px; }
   .top-header { padding: 0 16px; }
+  /* Identity picker: avatar stays, the long name and the dropdown width give
+     room so the control cannot push the header off-screen. */
+  .viewer-pop .user-name { display: none; }
+  .viewer-form { max-width: calc(100vw - 24px); }
 }
 
 /* Practice workspace — single guided card */

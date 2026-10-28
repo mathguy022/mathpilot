@@ -44,6 +44,7 @@ function pl(n,w){ n=n||0; return n+' '+(n===1?w:w+'s'); }
 async function loadInsights(){ const el=document.getElementById('insights');
  el.innerHTML='<p class="muted">Loading…</p>';
  try{ const r=await fetch('/api/analytics?course='+encodeURIComponent(currentScope()));
+  if(r.status===403){ INS=null; el.innerHTML='<p class="muted">Class insights are instructor-only. Pick an instructor account under <b>View as</b> in the header, then reload this page.</p>'; return; }
   if(!r.ok) throw new Error('failed');
   INS=await r.json(); fillCourseFilter(); renderInsights();
  }catch(e){ el.innerHTML='<p class="muted">Could not load insights.</p>'; } }
