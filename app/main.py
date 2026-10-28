@@ -1,10 +1,13 @@
 """MathPilot FastAPI app: student workspace, instructor dashboard, JSON API."""
+from __future__ import annotations
 import json
+import os
+import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Request, Depends, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Form, Request, Depends, HTTPException, UploadFile, File
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
@@ -13,7 +16,7 @@ from . import config
 from . import auth
 from .db import (
     Assignment, ensure_schema, get_db, init_db, Activity, Attempt, Course, CourseMaterial,
-    HintRequest, Lesson, Mastery, Publication, ReviewRequest, Submission,
+    HintRequest, Lesson, Mastery, Publication, ReviewRequest, SharedFile, Submission,
     TutorEvent, TutorSession, User,
 )
 from .seed import seed
@@ -25,6 +28,19 @@ app = FastAPI(title="MathPilot")
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE / "templates"))
 auth.add_viewer_context(templates)
+
+# Instructor-uploaded sources (PDF/Word). Stored outside /static so they are
+# never served publicly; access goes only through the gated route below.
+UPLOAD_DIR = BASE / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
+# extension -> (media type, inline-previewable?)
+UPLOAD_TYPES = {
+    ".pdf": ("application/pdf", True),
+    ".doc": ("application/msword", False),
+    ".docx": ("application/vnd.openxmlformats-officedocument"
+              ".wordprocessingml.document", False),
+}
 
 init_db()
 ensure_schema()
@@ -1781,6 +1797,124 @@ def material_add(title: str = Form(...), kind: str = Form("note"),
     db.add(CourseMaterial(title=title.strip(), kind=kind, body=body))
     db.commit()
     return RedirectResponse("/materials", status_code=303)
+
+
+# --- Instructor shared sources (PDF / Word) ------------------------------
+
+def _safe_original(name: str) -> str:
+    """Strip any path components from a browser-supplied filename."""
+    return os.path.basename(name or "file")[:300] or "file"
+
+
+def _stored_path(stored_name: str) -> Path:
+    """Resolve a stored name strictly inside UPLOAD_DIR (no traversal)."""
+    return (UPLOAD_DIR / os.path.basename(stored_name)).resolve()
+
+
+@app.get("/instructor/materials", response_class=HTMLResponse)
+def instructor_materials(request: Request,
+                         who: User = Depends(auth.require_instructor),
+                         db: Session = Depends(get_db)):
+    """Instructor panel: upload a source and share it with students."""
+    files = db.query(SharedFile).order_by(SharedFile.created_at.desc()).all()
+    from .courses import get_course_options
+    return templates.TemplateResponse(request, "instructor_materials.html", {
+        "request": request, "nav": "instructor-dashboard",
+        "active_nav": "shared-materials", "files": files,
+        "course_options": get_course_options(),
+    })
+
+
+@app.post("/instructor/materials/upload")
+async def instructor_materials_upload(
+        file: UploadFile = File(...), title: str = Form(""),
+        course: str = Form(""),
+        who: User = Depends(auth.require_instructor),
+        db: Session = Depends(get_db)):
+    original = _safe_original(file.filename)
+    ext = os.path.splitext(original)[1].lower()
+    if ext not in UPLOAD_TYPES:
+        raise HTTPException(400, "Only PDF, DOC, and DOCX files are allowed")
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "File exceeds the 15 MB limit")
+    if not data:
+        raise HTTPException(400, "File is empty")
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    _stored_path(stored_name).write_bytes(data)
+    row = SharedFile(
+        title=(title.strip() or original)[:300],
+        original_name=original, stored_name=stored_name,
+        content_type=UPLOAD_TYPES[ext][0], size=len(data),
+        course=course.strip()[:200], owner_id=who.id, shared=False)
+    db.add(row)
+    db.commit()
+    return RedirectResponse("/instructor/materials", status_code=303)
+
+
+@app.post("/instructor/materials/{file_id}/share")
+def instructor_materials_share(file_id: int,
+                               who: User = Depends(auth.require_instructor),
+                               db: Session = Depends(get_db)):
+    """Toggle student visibility. Off by default; sharing is an explicit act."""
+    row = db.get(SharedFile, file_id)
+    if not row:
+        raise HTTPException(404, "File not found")
+    row.shared = not row.shared
+    db.commit()
+    return RedirectResponse("/instructor/materials", status_code=303)
+
+
+@app.post("/instructor/materials/{file_id}/delete")
+def instructor_materials_delete(file_id: int,
+                                who: User = Depends(auth.require_instructor),
+                                db: Session = Depends(get_db)):
+    row = db.get(SharedFile, file_id)
+    if not row:
+        raise HTTPException(404, "File not found")
+    path = _stored_path(row.stored_name)
+    db.delete(row)
+    db.commit()
+    if path.is_file():
+        path.unlink()
+    return RedirectResponse("/instructor/materials", status_code=303)
+
+
+# --- Student shared-materials view ---------------------------------------
+
+@app.get("/shared", response_class=HTMLResponse)
+def shared_materials(request: Request, db: Session = Depends(get_db)):
+    """Student view of instructor-shared sources (shared rows only)."""
+    files = db.query(SharedFile).filter(
+        SharedFile.shared == True).order_by(  # noqa: E712
+        SharedFile.created_at.desc()).all()
+    return templates.TemplateResponse(request, "shared_materials.html", {
+        "request": request, "active_nav": "shared-materials", "files": files,
+    })
+
+
+@app.get("/shared/file/{file_id}")
+def shared_file(file_id: int, request: Request,
+                db: Session = Depends(get_db)):
+    """Serve a shared source. Students reach only shared rows; an instructor
+    may preview their own upload before sharing. PDFs render inline, Word
+    documents are forced to download (browsers cannot preview them)."""
+    row = db.get(SharedFile, file_id)
+    if not row:
+        raise HTTPException(404, "File not found")
+    if not row.shared:
+        who = auth.viewer(request, db)
+        if who is None or who.role != "instructor":
+            raise HTTPException(403, "This material has not been shared yet")
+    path = _stored_path(row.stored_name)
+    if not path.is_file():
+        raise HTTPException(404, "File is no longer available")
+    inline = UPLOAD_TYPES.get(
+        os.path.splitext(row.stored_name)[1].lower(), ("", False))[1]
+    disposition = "inline" if inline else "attachment"
+    return FileResponse(
+        path, media_type=row.content_type or "application/octet-stream",
+        filename=row.original_name, content_disposition_type=disposition)
 
 
 @app.get("/progress", response_class=HTMLResponse)

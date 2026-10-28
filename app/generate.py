@@ -17,6 +17,9 @@ from .schemas import Question, QuestionStep, verify_question
 MAX_NOTES_CHARS = 4000
 MAX_CANDIDATES = 10
 GEN_MAX_TOKENS = 2000
+# Oversampled candidate generation (and its top-up round) can exceed the
+# default 30s provider timeout on large models, so give it more headroom.
+GEN_TIMEOUT_S = 90.0
 
 GENERATE_SYSTEM = (
     "You are a mathematics question author. Output ONLY a JSON list of "
@@ -189,18 +192,20 @@ def generate_questions(notes: str, topic: str, num_questions: int = 5,
     # Oversample: the verification gate discards failures, so request
     # extra candidates up front (bounded by MAX_CANDIDATES).
     ask = min(MAX_CANDIDATES, n + (n + 1) // 2)
+    notes_body = bounded or (
+        f"(no notes — use standard textbook problems about {topic})")
     user_prompt = (
         f"Topic: {topic}\nDifficulty (1-5): {difficulty}\n"
         f"{course_context(course_label or topic)}\n"
         f"Generate {ask} DIFFERENT problems about {topic} based on these "
-        f"notes:\n{bounded or '(no notes — use standard textbook problems '
-        f'about ' + topic + ')'}"
+        f"notes:\n{notes_body}"
     )
     raw = nebius._chat(
         config.NEBIUS_MATH_MODEL,
         [{"role": "system", "content": GENERATE_SYSTEM},
          {"role": "user", "content": user_prompt}],
         max_tokens=GEN_MAX_TOKENS,
+        timeout_s=GEN_TIMEOUT_S,
     )
     try:
         candidates = parse_candidates(raw)
@@ -266,6 +271,7 @@ def generate_questions(notes: str, topic: str, num_questions: int = 5,
                 [{"role": "system", "content": GENERATE_SYSTEM},
                  {"role": "user", "content": top_up_prompt}],
                 max_tokens=GEN_MAX_TOKENS,
+                timeout_s=GEN_TIMEOUT_S,
             ))
             _admit(top_up_candidates, len(candidates))
         except Exception as exc:

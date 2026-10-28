@@ -1,0 +1,32 @@
+{% extends "base.html" %}{% set active_nav='shared-materials' %}
+{% block title %}Shared Materials{% endblock %}
+{% block content %}
+<h1 class="page-title">Shared Materials</h1>
+<p class="page-subtitle">Sources your instructor has shared for this course.</p>
+
+{% if not files %}
+<div class="card empty-state"><p class="muted">No materials have been shared yet. Check back soon.</p></div>
+{% endif %}
+
+{% for f in files %}
+<div class="card" style="margin-top:12px;">
+  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <b style="font-size:16px;">{{ f.title }}</b>
+    <span class="badge">{{ f.content_type.split('/')[-1] if f.content_type else 'file' }}</span>
+    <small class="muted">{% if f.course %}{{ f.course }} · {% endif %}
+      {% if f.size >= 1048576 %}{{ (f.size/1048576)|round(1) }} MB{% else %}{{ (f.size/1024)|round(0) }} KB{% endif %}
+      · shared {{ f.created_at.strftime('%Y-%m-%d') if f.created_at else '' }}</small>
+    <a class="btn small ghost" style="margin-left:auto" href="/shared/file/{{ f.id }}" download>⬇ Download</a>
+  </div>
+  {% if f.content_type == 'application/pdf' %}
+  <details style="margin-top:10px;" ontoggle="if(this.open){var fr=this.querySelector('iframe');if(fr&&!fr.src)fr.src='/shared/file/{{ f.id }}';}">
+    <summary class="muted">Preview PDF</summary>
+    <iframe title="{{ f.title }}" loading="lazy"
+            style="width:100%; height:640px; margin-top:8px; border:1px solid #e2e8f0; border-radius:10px;"></iframe>
+  </details>
+  {% else %}
+  <p class="muted" style="font-size:12.5px; margin-top:6px;">Word document — use Download to open it.</p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endblock %}

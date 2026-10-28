@@ -1,4 +1,5 @@
 """SQLite persistence via SQLAlchemy. No secrets or PII stored."""
+from __future__ import annotations
 from sqlalchemy import (
     Boolean,
     Column,
@@ -87,6 +88,29 @@ class CourseMaterial(Base):
     title = Column(String(200), nullable=False)
     kind = Column(String(50), default="note")  # note|reference|link
     body = Column(Text, default="")
+    created_at = Column(DateTime, default=utcnow)
+
+
+class SharedFile(Base):
+    """An instructor-uploaded source (PDF or Word) to share with students.
+
+    Files are stored on disk under a random name; ``stored_name`` is the only
+    path the server uses, so an upload's own filename can never steer the
+    lookup. ``shared`` is the student-visible switch: unshared rows are
+    instructor-private. Content is treated as untrusted and only ever served
+    back for view/download — never parsed.
+    """
+
+    __tablename__ = "shared_files"
+    id = Column(Integer, primary_key=True)
+    title = Column(String(300), nullable=False, default="")
+    original_name = Column(String(300), default="")
+    stored_name = Column(String(200), nullable=False, default="")
+    content_type = Column(String(100), default="")
+    size = Column(Integer, default=0)
+    course = Column(String(200), default="")
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    shared = Column(Boolean, default=False)
     created_at = Column(DateTime, default=utcnow)
 
 

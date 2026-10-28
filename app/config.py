@@ -1,4 +1,5 @@
 """Central application settings. Secrets come from environment only."""
+from __future__ import annotations
 import os
 
 from dotenv import load_dotenv

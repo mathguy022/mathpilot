@@ -1,4 +1,5 @@
 """Seed the course catalog and demo users. All synthetic, no PII."""
+from __future__ import annotations
 from .courses import SUPPORTED_COURSES
 from .db import SessionLocal, User, Course
 

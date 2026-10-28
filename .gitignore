@@ -154,6 +154,10 @@ activemq-data/
 .envrc
 .mathpilot.db
 mathpilot.db
+
+# Instructor-uploaded sources and local virtualenv (never commit)
+uploads/
+.venv/
 .venv
 env/
 venv/

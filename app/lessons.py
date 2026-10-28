@@ -26,6 +26,9 @@ from .schemas import (
 
 MAX_NOTES_CHARS = 4000
 GEN_MAX_TOKENS = 7500
+# A full lesson JSON at GEN_MAX_TOKENS routinely needs more than the default
+# 30s to stream, especially with reasoning disabled on large models.
+GEN_TIMEOUT_S = 120.0
 
 
 def close_truncated_json(s: str) -> str:
@@ -192,6 +195,7 @@ def generate_lesson(notes: str, course: str, topic: str,
             [{"role": "system", "content": LESSON_SYSTEM},
              {"role": "user", "content": user_prompt}],
             max_tokens=GEN_MAX_TOKENS,
+            timeout_s=GEN_TIMEOUT_S,
         )
     except Exception as exc:
         raise RuntimeError(f"Lesson generation failed: {exc}") from exc

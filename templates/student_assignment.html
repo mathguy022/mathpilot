@@ -28,7 +28,7 @@
 {% for q in items %}
 <div class="card q-pane" id="q-{{ loop.index0 }}" style="margin-top:12px; {% if not loop.first %}display:none{% endif %}">
   <h3>Q{{ loop.index }} <small class="muted">· difficulty {{ q.difficulty }}</small></h3>
-  <p style="font-size:16px;">${{ q.prompt_latex }}$</p>
+  <p class="q-prompt" data-latex="{{ q.prompt_latex|e }}" style="font-size:16px;"></p>
   {% for s in q.steps %}<p class="muted"><small>Step {{ loop.index }}: {{ s.description }}</small></p>{% endfor %}
   <label for="ans-{{ loop.index0 }}"><b>Your answer</b></label>
   <math-field id="ans-{{ loop.index0 }}" data-item="{{ q.item_id }}" aria-label="Answer for question {{ loop.index }}"></math-field>
@@ -54,6 +54,11 @@ const SAVED={{ saved|tojson }};
 function collect(){ const a={}; document.querySelectorAll('math-field[data-item]').forEach(m=>{ let v=''; try{ v=m.getValue('latex')||m.value||''; }catch(e){ v=m.value||''; } a[m.dataset.item]=(v||'').trim(); }); return a; }
 function restore(){ document.querySelectorAll('math-field[data-item]').forEach(m=>{ const v=SAVED[m.dataset.item]; if(v){ try{m.setValue(v);}catch(e){} } }); }
 function showQ(i){ document.querySelectorAll('.q-pane').forEach((p,j)=>{ p.style.display=(j===i)?'block':'none'; }); document.getElementById('q-nav').value=i; if(window.renderMath) window.renderMath(document.getElementById('q-'+i)); }
+// Wrap a prompt in $...$ only when it has no math delimiter yet, matching the
+// instructor view (asMath). Generated prompt_latex already embeds $/$$, so the
+// old unconditional wrap produced nested delimiters KaTeX could not parse.
+function asMath(s){ s=String(s==null?"":s).trim(); if(!s) return ""; if(/\$|\\\(|\\\[/.test(s)) return s; return "$"+s+"$"; }
+function fillPrompts(){ document.querySelectorAll('.q-prompt').forEach(el=>{ el.textContent=asMath(el.dataset.latex||''); }); }
 function setState(t){ document.getElementById('save-state').textContent=t; }
 async function saveProgress(){ const b=document.getElementById('save-btn'); b.disabled=true; setState('Saving…');
  try{ const r=await fetch('/api/assignments/progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_id:LINK_ID,answers:collect()})});
@@ -64,6 +69,6 @@ async function submitAsg(){ if(!confirm('Submit this assignment? You cannot chan
  try{ const r=await fetch('/api/assignments/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_id:LINK_ID,answers:collect()})});
   const j=await r.json(); if(!r.ok){ setState('Error: '+(j.detail||'failed')); b.disabled=false; return; }
   location.reload(); }catch(e){ setState('Request failed.'); b.disabled=false; } }
-window.addEventListener('load', ()=>{ restore(); if(window.renderMath) window.renderMath(document.body); });
+window.addEventListener('load', ()=>{ restore(); fillPrompts(); if(window.renderMath) window.renderMath(document.body); });
 </script>
 {% endblock %}
