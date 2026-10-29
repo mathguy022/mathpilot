@@ -142,6 +142,8 @@ class Lesson(Base):
     student_content_json = Column(Text, default="{}")
     settings_json = Column(Text, default="{}")
     verification_json = Column(Text, default="{}")
+    # Cached practice top-up: generated items + their answers, server-side only.
+    practice_json = Column(Text, default="{}")
     status = Column(String(20), default="draft")  # draft|approved|published
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
@@ -212,6 +214,13 @@ def ensure_schema():
                 submitted_at DATETIME,
                 created_at DATETIME,
                 updated_at DATETIME)""")
+        # Per-item attempt tracking added after the first MVP release.
+        sub_cols = {r[1] for r in conn.exec_driver_sql(
+            f"PRAGMA table_info({Submission.__tablename__})")}
+        if "attempts_json" not in sub_cols:
+            conn.exec_driver_sql(
+                f"ALTER TABLE {Submission.__tablename__} "
+                "ADD COLUMN attempts_json TEXT DEFAULT '{}'")
         # Floating-tutor tables (new tables only; existing ones untouched).
         conn.exec_driver_sql(
             f"""CREATE TABLE IF NOT EXISTS {TutorSession.__tablename__} (
@@ -246,6 +255,25 @@ def ensure_schema():
             conn.exec_driver_sql(
                 f"ALTER TABLE {TutorEvent.__tablename__} "
                 "ADD COLUMN tutor_reply TEXT DEFAULT ''")
+        # Cached practice set on lessons (generated questions + answers).
+        les_cols = {r[1] for r in conn.exec_driver_sql(
+            f"PRAGMA table_info({Lesson.__tablename__})")}
+        if "practice_json" not in les_cols:
+            conn.exec_driver_sql(
+                f"ALTER TABLE {Lesson.__tablename__} "
+                "ADD COLUMN practice_json TEXT DEFAULT '{}'")
+        # Ungraded practice progress (autosave).
+        conn.exec_driver_sql(
+            f"""CREATE TABLE IF NOT EXISTS {PracticeProgress.__tablename__} (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                package_ref VARCHAR(64) NOT NULL,
+                item_id VARCHAR(64) NOT NULL,
+                status VARCHAR(20) DEFAULT 'started',
+                tries INTEGER DEFAULT 0,
+                hints INTEGER DEFAULT 0,
+                draft TEXT DEFAULT '',
+                updated_at DATETIME)""")
 
 
 class ReviewRequest(Base):
@@ -271,6 +299,7 @@ class Submission(Base):
     publication_id = Column(Integer, ForeignKey("publications.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     answers_json = Column(Text, default="{}")
+    attempts_json = Column(Text, default="{}")  # item_id -> {tries, correct}
     status = Column(String(20), default="draft")  # draft|submitted
     submitted_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utcnow)
@@ -314,6 +343,26 @@ class TutorEvent(Base):
     event_type = Column(String(30), default="message")
     tutor_reply = Column(Text, default="")  # what the tutor said back
     created_at = Column(DateTime, default=utcnow)
+
+
+class PracticeProgress(Base):
+    """One student's position in an ungraded practice package.
+
+    Makes "your progress is saved automatically" true: the item the student is
+    on, how many tries/hints they spent, and their unsent draft survive a
+    reload. Never visible as a grade.
+    """
+
+    __tablename__ = "practice_progress"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    package_ref = Column(String(64), nullable=False)
+    item_id = Column(String(64), nullable=False)
+    status = Column(String(20), default="started")  # started|solved|skipped
+    tries = Column(Integer, default=0)
+    hints = Column(Integer, default=0)
+    draft = Column(Text, default="")
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 def get_db():

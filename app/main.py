@@ -16,8 +16,9 @@ from . import config
 from . import auth
 from .db import (
     Assignment, ensure_schema, get_db, init_db, Activity, Attempt, Course, CourseMaterial,
-    HintRequest, Lesson, Mastery, Publication, ReviewRequest, SharedFile, Submission,
-    TutorEvent, TutorSession, User,
+    HintRequest, Lesson, Mastery, Publication, PracticeProgress, ReviewRequest,
+    SharedFile, Submission,
+    TutorEvent, TutorSession, User, utcnow,
 )
 from .seed import seed
 from .tutor import orchestrate
@@ -135,6 +136,199 @@ def _student_cards(db: Session, pubs: list) -> tuple[list, list]:
     return lessons, assignments
 
 
+PRACTICE_TARGET_ITEMS = 5
+
+
+def _lesson_course_title(db: Session, lesson: Lesson) -> str:
+    course = db.get(Course, lesson.course_id) if lesson.course_id else None
+    return (course.title if course else "") or ""
+
+
+def _practice_options(db: Session) -> list:
+    """Every lesson a student may practise — published or only approved.
+
+    Published lessons keep their shareable link id; an approved lesson with no
+    publication gets a 'lesson-<id>' ref so practice never waits on publishing.
+    """
+    options, seen = [], set()
+    pubs = db.query(Publication).filter(
+        Publication.lesson_id.isnot(None)).order_by(Publication.id.desc()).all()
+    for p in pubs:
+        lesson = db.get(Lesson, p.lesson_id)
+        if not lesson or lesson.id in seen:
+            continue
+        seen.add(lesson.id)
+        options.append({
+            "ref": p.link_id, "lesson_id": lesson.id,
+            "title": lesson.title or p.title or "Untitled",
+            "topic": lesson.topic or "",
+            "course": p.assigned_course or _lesson_course_title(db, lesson),
+            "n_items": _practice_item_count(lesson)})
+    approved = db.query(Lesson).filter(
+        Lesson.status == "approved").order_by(Lesson.id.desc()).all()
+    for lesson in approved:
+        if lesson.id in seen:
+            continue
+        seen.add(lesson.id)
+        options.append({
+            "ref": f"lesson-{lesson.id}", "lesson_id": lesson.id,
+            "title": lesson.title or "Untitled", "topic": lesson.topic or "",
+            "course": _lesson_course_title(db, lesson),
+            "n_items": _practice_item_count(lesson)})
+    return options
+
+
+def _practice_item_count(lesson: Lesson) -> int:
+    """How many practice items this lesson already carries (no AI call)."""
+    import json as _json
+
+    from .lessons import split_student_payload
+
+    try:
+        content = split_student_payload(_json.loads(
+            lesson.student_content_json or "{}"))
+    except Exception:
+        return 0
+    return len(content.get("guided_items", []) or [])
+
+
+def _practice_lesson(db: Session, ref: str) -> Lesson:
+    """Resolve a practice package ref ('lesson-<id>' or a publication link)."""
+    ref = str(ref or "").strip()
+    if not ref:
+        raise HTTPException(400, "No practice package selected")
+    if ref.startswith("lesson-"):
+        try:
+            lesson_id = int(ref.split("-", 1)[1])
+        except ValueError:
+            raise HTTPException(404, "Practice package not found")
+        lesson = db.get(Lesson, lesson_id)
+        if not lesson or lesson.status == "draft":
+            raise HTTPException(404, "Practice package not found")
+        return lesson
+    pub = db.query(Publication).filter(Publication.link_id == ref).first()
+    if not pub or not pub.lesson_id:
+        raise HTTPException(404, "Practice package not found")
+    lesson = db.get(Lesson, pub.lesson_id)
+    if not lesson:
+        raise HTTPException(404, "Practice package not found")
+    return lesson
+
+
+def _practice_cache(lesson: Lesson) -> tuple:
+    import json as _json
+
+    try:
+        cache = _json.loads(lesson.practice_json or "{}")
+    except Exception:
+        cache = {}
+    if not isinstance(cache, dict):
+        cache = {}
+    items = cache.get("items") or []
+    answers = cache.get("answers") or {}
+    return (items if isinstance(items, list) else [],
+            answers if isinstance(answers, dict) else {})
+
+
+def _practice_set(db: Session, lesson: Lesson) -> dict:
+    """Practice items for a lesson: its own guided items first, then verified
+    generated questions up to PRACTICE_TARGET_ITEMS.
+
+    Generated items are cached on the lesson, so the AI call happens once per
+    lesson rather than on every student visit. Answers stay server-side; only
+    prompts and hints reach the student.
+    """
+    import json as _json
+
+    from .lessons import split_student_payload
+
+    try:
+        content = split_student_payload(_json.loads(
+            lesson.student_content_json or "{}"))
+    except Exception:
+        content = {}
+    items = []
+    answers: dict = {}
+    for g in content.get("guided_items", []) or []:
+        items.append({"item_id": g.get("item_id", ""),
+                      "prompt_latex": g.get("prompt_latex", ""),
+                      "context": g.get("context", "Guided practice"),
+                      "hints_enabled": g.get("hints_enabled", True),
+                      "source": "lesson"})
+    for c in _practice_cache(lesson)[0]:
+        if not isinstance(c, dict) or not c.get("item_id"):
+            continue
+        if any(i["item_id"] == c["item_id"] for i in items):
+            continue
+        items.append({"item_id": c["item_id"],
+                      "prompt_latex": c.get("prompt_latex", ""),
+                      "context": c.get("context", "Extra practice"),
+                      "hints": [str(h) for h in (c.get("hints") or []) if h],
+                      "hints_enabled": True,
+                      "source": "generated"})
+        answers[c["item_id"]] = str(c.get("answer", ""))
+    shortfall = PRACTICE_TARGET_ITEMS - len(items)
+    if shortfall > 0 and config.ai_configured():
+        generated = _practice_generate(lesson, shortfall, items)
+        if generated:
+            cached_items, cached_answers = _practice_cache(lesson)
+            new_items = cached_items + generated
+            merged_answers = dict(cached_answers)
+            for q in generated:
+                merged_answers[q["item_id"]] = q["answer"]
+            lesson.practice_json = _json.dumps(
+                {"items": new_items, "answers": merged_answers})
+            db.commit()
+            for q in generated:
+                answers[q["item_id"]] = q["answer"]
+                items.append({"item_id": q["item_id"],
+                              "prompt_latex": q["prompt_latex"],
+                              "context": q["context"],
+                              "hints": list(q.get("hints") or []),
+                              "hints_enabled": True,
+                              "source": "generated"})
+    return {"items": items, "answers": answers,
+            "title": content.get("title") or lesson.title,
+            "topic": content.get("topic") or lesson.topic,
+            "course": _lesson_course_title(db, lesson)}
+
+
+def _practice_generate(lesson: Lesson, need: int, existing: list) -> list:
+    """Generate `need` verified questions grounded in this lesson."""
+    from .generate import generate_questions
+    from .schemas import (lesson_assignment_context,
+                          lesson_content_from_json)
+
+    notes = lesson_assignment_context(
+        lesson_content_from_json(lesson.instructor_content_json))
+    topic = (lesson.topic or lesson.title or "").strip()
+    # Ask for more than needed: the SymPy gate discards candidates, and a
+    # single-item request would leave almost nothing to choose from.
+    try:
+        result = generate_questions(notes=notes, topic=topic,
+                                    num_questions=max(4, need))
+    except Exception:
+        return []
+    used = {str(i.get("prompt_latex", "")).strip() for i in existing}
+    out = []
+    start = len(existing)
+    for q in (result or {}).get("verified", []) or []:
+        if len(out) >= need:
+            break
+        prompt = str(q.get("prompt_latex", "") or "").strip()
+        if not prompt or prompt in used:
+            continue
+        used.add(prompt)
+        hints = []
+        for st in q.get("steps", []) or []:
+            hints.extend([str(h) for h in (st.get("hints") or []) if h])
+        out.append({"item_id": f"p{start + len(out) + 1}",
+                    "prompt_latex": prompt, "context": "Extra practice",
+                    "hints": hints[:3],
+                    "answer": str(q.get("final_answer_latex", "") or "")})
+    return out
+
+
 @app.get("/practice", response_class=HTMLResponse)
 def practice_page(request: Request, topic: str = "", db: Session = Depends(get_db)):
     """Practice with AI Tutor: pick a lesson package, work its guided items.
@@ -142,17 +336,7 @@ def practice_page(request: Request, topic: str = "", db: Session = Depends(get_d
     ?topic= preselects the first package whose lesson matches the topic
     (used by the lesson page's "Practice This Topic" button).
     """
-    pubs = db.query(Publication).filter(
-        Publication.lesson_id.isnot(None)).order_by(
-        Publication.id.desc()).all()
-    options = []
-    for p in pubs:
-        lesson = db.get(Lesson, p.lesson_id)
-        title = (lesson.title if lesson else None) or p.title or "Untitled"
-        lesson_topic = (lesson.topic if lesson else "") or ""
-        options.append({"link_id": p.link_id, "title": title,
-                        "topic": lesson_topic,
-                        "course": p.assigned_course or ""})
+    options = _practice_options(db)
     selected = None
     if topic:
         needle = topic.strip().lower()
@@ -176,31 +360,41 @@ def practice_page(request: Request, topic: str = "", db: Session = Depends(get_d
 
 @app.post("/api/practice/items")
 def api_practice_items(payload: dict, db: Session = Depends(get_db)):
-    """Guided practice items for a student package (no solutions)."""
-    import json as _json
+    """Practice items for a package: guided lesson items, topped up to five.
 
-    from .lessons import split_student_payload
+    Answers never leave the server; they are resolved again inside
+    /api/practice/attempt when a step is graded.
+    """
+    ref = str(payload.get("ref", "") or "").strip()
+    lesson = _practice_lesson(db, ref)
+    packed = _practice_set(db, lesson)
+    return {"ref": ref, "items": packed["items"], "title": packed["title"],
+            "topic": packed["topic"], "course": packed["course"],
+            "target": PRACTICE_TARGET_ITEMS,
+            "hint_budget": PRACTICE_HINT_BUDGET,
+            "progress": _practice_progress_map(db, ref)}
 
-    link_id = str(payload.get("link_id", "") or "").strip()
-    pub = db.query(Publication).filter(
-        Publication.link_id == link_id).first()
-    if not pub or not pub.lesson_id:
-        raise HTTPException(404, "Practice package not found")
-    lesson = db.get(Lesson, pub.lesson_id)
-    if not lesson or not lesson.student_content_json:
-        return {"items": [], "title": pub.title}
-    try:
-        content = split_student_payload(_json.loads(lesson.student_content_json))
-    except Exception:
-        return {"items": [], "title": pub.title}
-    items = []
-    for g in content.get("guided_items", []) or []:
-        items.append({"item_id": g.get("item_id", ""),
-                      "prompt_latex": g.get("prompt_latex", ""),
-                      "context": g.get("context", ""),
-                      "hints_enabled": g.get("hints_enabled", True)})
-    return {"items": items, "title": content.get("title", pub.title),
-            "topic": content.get("topic", "")}
+
+@app.post("/api/practice/progress")
+def api_practice_progress(payload: dict, db: Session = Depends(get_db)):
+    """Save the student's place in a practice package (draft text, skip).
+
+    Ungraded and never surfaced as a score; it only restores where they were.
+    """
+    ref = str(payload.get("ref", "") or "").strip()
+    item_id = str(payload.get("item_id", "") or "").strip()
+    if not item_id:
+        raise HTTPException(400, "item_id is required")
+    _practice_lesson(db, ref)
+    row = _practice_progress_row(db, ref, item_id)
+    status = str(payload.get("status", "") or "")
+    if status in ("started", "solved", "skipped"):
+        row.status = status
+    if "draft" in payload:
+        row.draft = str(payload.get("draft") or "")[:500]
+    row.updated_at = utcnow()
+    db.commit()
+    return {"saved": True, "status": row.status}
 
 
 PRACTICE_HINT_RUNGS = (
@@ -211,24 +405,51 @@ PRACTICE_HINT_RUNGS = (
     "compare that with your attempt.",
 )
 
+# The top rung is where a stuck student can otherwise read the same sentence
+# four turns running, so it rotates through three different first moves.
+PRACTICE_MICRO_STEPS = (
+    "Say in one sentence what this item wants before you write any symbols.",
+    "Copy the item, then underline the one part you can act on first.",
+    "Make a single change, then stop and compare it with the item.",
+)
+
 
 def _practice_say(*, user_text: str, history: list[dict], course_ref: str,
                   intent: str, situation: str, fallback: str,
-                  reveal=()) -> str:
+                  reveal=(), turn: str = "", example_guard: str = "") -> str:
     """LLM-worded practice reply, with the deterministic string as fallback.
 
-    SymPy has already decided the verdict; the model only phrases it. When the
-    phrasing states the item's answer instead of guiding toward it, the
-    deterministic line is used — practice never reveals solutions.
+    SymPy has already decided the verdict; the model only phrases it. A
+    phrasing that states the item's answer is regenerated, and if it still
+    states it the deterministic line is used — practice never reveals
+    solutions.
     """
     from . import float_chat as _chat
 
-    text = _chat.reply(user_text=user_text, history=history[-6:],
-                       course_ref=course_ref, intent=intent,
-                       situation=situation, graded=False)
-    if text and _reply_reveals(text, reveal):
-        text = ""
-    return _float_display(text or fallback)
+    banned = [str(r) for r in reveal if r]
+
+    def safe(text: str) -> bool:
+        if banned and _reply_reveals(text, banned):
+            return False
+        if example_guard and _example_matches_problem(text, example_guard):
+            return False
+        return True
+
+    out = _chat.reply(user_text=user_text, history=history[-6:],
+                      course_ref=course_ref, intent=intent,
+                      situation=situation, graded=False, turn=turn,
+                      validate=safe)
+    if not out:
+        return _float_display(fallback)
+    text = out[0]
+    # Regeneration gets two tries; the gate is the last word, so a reply that
+    # still runs long, spoils the answer, or copies the student's numbers is
+    # replaced by the scripted line rather than censored mid-sentence.
+    if _chat._too_long(text):
+        return _float_display(fallback)
+    if not safe(text):
+        return _float_display(fallback)
+    return _float_display(text)
 
 
 def _practice_verdict(problem: str, cleaned: str):
@@ -240,7 +461,8 @@ def _practice_verdict(problem: str, cleaned: str):
     problem and compares that with the attempt.
     """
     from .schemas import Question
-    from .verifier import check_equivalent, verify_canonical
+    from .verifier import Verdict, check_equivalent, normalize_math, \
+        verify_canonical
 
     q = Question(id=0, prompt_latex=problem, steps=[],
                  final_answer_latex=cleaned)
@@ -248,13 +470,97 @@ def _practice_verdict(problem: str, cleaned: str):
     if v.status == "unverifiable":
         alt = check_equivalent(cleaned, problem)
         if alt.status != "unverifiable":
-            return alt
+            v = alt
+    # Re-typing the item is not an attempt. Expression items are graded by
+    # equivalence ("3(x-3)" for "3x-9"), so only an exact restatement counts
+    # as an echo — anything else would reject a correct rewrite.
+    try:
+        echoed = ("".join(str(normalize_math(cleaned)).split())
+                  == "".join(str(normalize_math(problem)).split()))
+    except Exception:
+        echoed = False
+    if v.status == "correct" and echoed:
+        return Verdict("echo", "That repeats the item as written.")
     return v
+
+
+def _guided_expected_latex(lesson: Lesson, item_id: str) -> str:
+    """Target math for a lesson guided item, from the practice section by index.
+
+    Guided items carry no answers by design, so the expected form is resolved
+    from the instructor's practice section at the same position.
+    """
+    import json as _json
+
+    try:
+        instructor = _json.loads(lesson.instructor_content_json or "{}")
+    except Exception:
+        return ""
+    try:
+        idx = int(item_id.split("-")[-1]) - 1
+    except (ValueError, IndexError):
+        return ""
+    for s in instructor.get("sections", []) or []:
+        if isinstance(s, dict) and s.get("kind") == "practice":
+            math_items = s.get("math_latex", []) or []
+            if 0 <= idx < len(math_items):
+                return str(math_items[idx])
+            break
+    return ""
+
+
+PRACTICE_HINT_BUDGET = 3
+
+
+def _practice_progress_map(db: Session, ref: str) -> dict:
+    rows = db.query(PracticeProgress).filter(
+        PracticeProgress.user_id == 1,
+        PracticeProgress.package_ref == ref).all()
+    return {r.item_id: {"status": r.status, "tries": r.tries or 0,
+                        "hints": r.hints or 0, "draft": r.draft or ""}
+            for r in rows}
+
+
+def _practice_progress_get(db: Session, ref: str, item_id: str):
+    """Read the saved row without creating one (the write path owns creation)."""
+    return db.query(PracticeProgress).filter(
+        PracticeProgress.user_id == 1,
+        PracticeProgress.package_ref == ref,
+        PracticeProgress.item_id == item_id).first()
+
+
+def _practice_progress_row(db: Session, ref: str, item_id: str):
+    row = _practice_progress_get(db, ref, item_id)
+    if not row:
+        row = PracticeProgress(user_id=1, package_ref=ref, item_id=item_id)
+        db.add(row)
+        db.commit()
+    return row
+
+
+def _practice_progress_record(db: Session, ref: str, item_id: str,
+                              verdict: str, hint_level=None) -> None:
+    """Fold one tutor turn into the student's saved place.
+
+    Counters live here, not in the browser, so a reload cannot reset a try or
+    a hint that was already spent.
+    """
+    row = _practice_progress_row(db, ref, item_id)
+    if verdict == "correct":
+        row.tries = (row.tries or 0) + 1
+        row.status = "solved"
+    elif verdict == "incorrect":
+        row.tries = (row.tries or 0) + 1
+        row.status = "started"
+    if hint_level is not None:
+        row.hints = max(0, int(hint_level))
+    row.updated_at = utcnow()
+    db.commit()
 
 
 @app.post("/api/practice/attempt")
 def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
-    """Chat with the tutor about one guided practice item.
+    """Chat with the tutor about one practice item.
 
     Same pipeline as the floating widget: the intent router decides whether a
     message is a math attempt at all, SymPy decides correctness, and the LLM
@@ -262,14 +568,10 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
     server-side state, and no reply may state the item's answer (practice is
     ungraded but still never reveals solutions).
     """
-    import json as _json
-    import re as _re
-
     from . import float_intent as _intent
-    from .lessons import split_student_payload
     from .verifier import MAX_LEN
 
-    link_id = str(payload.get("link_id", "") or "").strip()
+    ref = str(payload.get("ref", "") or "").strip()
     item_id = str(payload.get("item_id", "") or "").strip()
     student = str(payload.get("response", ""))[:MAX_LEN].strip()
     if not student:
@@ -277,48 +579,24 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
                 "reply": "Type your attempt, or ask me a question — I can "
                          "hint, explain, or walk it step by step.",
                 "replyType": "bubble", "hintLevel": 0, "revealed": False}
-    pub = db.query(Publication).filter(
-        Publication.link_id == link_id).first()
-    if not pub or not pub.lesson_id:
-        raise HTTPException(404, "Practice package not found")
-    lesson = db.get(Lesson, pub.lesson_id)
-    if not lesson or not lesson.student_content_json:
-        raise HTTPException(404, "No practice content")
-    try:
-        content = split_student_payload(_json.loads(lesson.student_content_json))
-    except Exception:
-        raise HTTPException(502, "Practice content unreadable")
-    guided = {g.get("item_id"): g for g in
-              content.get("guided_items", []) or []}
-    if item_id not in guided:
+    lesson = _practice_lesson(db, ref)
+    packed = _practice_set(db, lesson)
+    items_by_id = {i.get("item_id"): i for i in packed["items"]}
+    if item_id not in items_by_id:
         raise HTTPException(404, "Practice item not found")
-    # Expected answer lives in the instructor-approved student content?
-    # No — guided items carry no answers by design. Resolve the expected
-    # form from the matching practice section's worked content is wrong;
-    # instead verify against the instructor's practice math via the
-    # stored instructor content practice section at the same index.
-    try:
-        instructor = _json.loads(lesson.instructor_content_json or "{}")
-    except Exception:
-        instructor = {}
-    expected = ""
-    try:
-        idx = int(item_id.split("-")[-1]) - 1
-        for s in instructor.get("sections", []) or []:
-            if isinstance(s, dict) and s.get("kind") == "practice":
-                math_items = s.get("math_latex", []) or []
-                if 0 <= idx < len(math_items):
-                    expected = str(math_items[idx])
-                break
-    except Exception:
-        expected = ""
-
-    item = guided[item_id]
+    item = items_by_id[item_id]
     prompt = str(item.get("prompt_latex", "") or "").strip()
-    course_ref = str(payload.get("course", "") or pub.assigned_course or "")
-    key = f"practice:{link_id}:{item_id}"
+    expected = (str(packed["answers"].get(item_id) or "")
+                if item.get("source") == "generated"
+                else _guided_expected_latex(lesson, item_id))
+    course_ref = str(payload.get("course", "") or packed["course"] or "")
+    key = f"practice:{ref}:{item_id}"
     state = PRACTICE_STATE.setdefault(key, {"hints": 0, "misses": 0})
     history = DEMO_HISTORY.setdefault(key, [])
+    saved = _practice_progress_get(db, ref, item_id)
+    if saved:
+        # A reload must not hand the student a fresh hint budget.
+        state["hints"] = max(state["hints"], saved.hints or 0)
     item_line = f"The open practice item is: {prompt}" if prompt else ""
     # What the reply must not say, derived by SymPy rather than by the model.
     from .verifier import canonical_answer as _canonical_answer
@@ -326,21 +604,44 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
 
     intent = _intent.classify(student, has_session=True)
 
+    def _turn_ctx(verdict: str = "", intent_name: str = "",
+                  repeats: bool = False) -> str:
+        from . import float_chat as _chat
+
+        return _chat.turn_context(
+            problem=prompt or expected, verdict=verdict,
+            hint_level=state["hints"],
+            intent=intent_name or intent.lower(), mode="practice",
+            first_name=_student_first_name(db, 1),
+            student_answer=student, repeats=repeats)
+
+    def _log_turn(rtype: str, verdict: str) -> None:
+        import logging as _logging
+
+        _logging.getLogger("mathpilot.tutor").info(
+            "tutor_turn item=%s intent=%s reply_type=%s verdict=%s "
+            "hint_level=%s mode=practice", item_id, intent.lower(), rtype,
+            verdict, state["hints"])
+
     def _turn(reply: str, verdict: str, detail: str = "",
               rtype: str = "bubble") -> dict:
         history.extend([{"role": "user", "content": student},
                         {"role": "assistant", "content": reply}])
+        _practice_progress_record(db, ref, item_id, verdict, state["hints"])
+        _log_turn(rtype, verdict)
         return {"verdict": verdict, "reply": reply, "detail": detail,
                 "intent": intent, "replyType": rtype,
                 "hintLevel": state["hints"], "revealed": False,
                 "misses": state["misses"]}
 
     def _say(situation: str, fallback: str,
-             intent_name: str = "chat") -> str:
+             intent_name: str = "chat", verdict: str = "",
+             example_guard: bool = False) -> str:
         return _practice_say(
             user_text=student, history=history, course_ref=course_ref,
             intent=intent_name, situation=situation, fallback=fallback,
-            reveal=answers)
+            reveal=answers, turn=_turn_ctx(verdict, intent_name=intent_name),
+            example_guard=(prompt or expected) if example_guard else "")
 
     def _hint(lvl: int, extra: str) -> str:
         state["hints"] = lvl
@@ -349,13 +650,22 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
             f"{lvl} of 4 for this practice item (1 what the item asks for, "
             "2 where to look, 3 which lesson rule to apply, 4 split it into "
             "micro-steps). Name the move, never do the algebra for them, and "
-            "never state what the item evaluates to. "
-            f"{item_line} {extra}",
-            "")
-        body = _re.sub(r"^\s*(hint\s*)?\d+\s*[—\-:]\s*", "", body.strip(),
-                      flags=_re.IGNORECASE)
+            "never state what the item evaluates to. Open with the help "
+            "itself: do not repeat the word Hint or number the rung, the app "
+            "prints that label. "
+            + ("For level 3 the worked example must use different numbers "
+               "than the student's item. " if lvl == 3 else "")
+            + f"{item_line} {extra}",
+            "", verdict="incorrect", example_guard=lvl == 3)
+        body = _model_body(body)
+        micro = PRACTICE_MICRO_STEPS[state["misses"] % len(PRACTICE_MICRO_STEPS)]
+        last = next((str(h.get("content", "")) for h in reversed(history)
+                     if h.get("role") == "assistant"), "")
+        if micro in last:
+            micro = PRACTICE_MICRO_STEPS[
+                (state["misses"] + 1) % len(PRACTICE_MICRO_STEPS)]
         return _float_display(
-            f"Hint {lvl} — {body or PRACTICE_HINT_RUNGS[lvl - 1]}")
+            f"Hint {lvl} — {body or (micro if lvl >= 4 else PRACTICE_HINT_RUNGS[lvl - 1])}")
 
     if intent == "OFF_TOPIC":
         return _turn(_say(
@@ -408,15 +718,58 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
                            "The student asked for help."),
                      "hint", rtype="hint")
 
+    if intent in ("START_STEP", "FRUSTRATED"):
+        # "I don't know" and "what should I do?" are not attempts: no miss, no
+        # hint spent. The student gets the first move on the item as an action.
+        asks = sum(1 for h in history if h.get("role") == "user" and
+                   _intent.classify(str(h.get("content", "")), True) == intent)
+        if asks >= 2:
+            # A third "I'm lost" means restating the start is not helping:
+            # climb one rung of the ladder instead.
+            return _turn(_hint(min(4, state["hints"] + 1),
+                               "The student asked what to do more than once."),
+                         "not_an_attempt", "", "hint")
+        scripted = (
+            "This one is tricky, and that's okay. One small move first: say "
+            "in words what the item asks for, then write only that line."
+            if intent == "FRUSTRATED" else
+            "First move only: look at the left side of the item and name the "
+            "very first operation you would do. Write just that line — what "
+            "do you get?")
+        said = _say(
+            (f"The student is frustrated. Acknowledge in one sentence, then "
+             "shrink the work to one small move on this item and ask them to "
+             f"send only that. {item_line}"
+             if intent == "FRUSTRATED" else
+             "The student asked what to do. Give one action for the first "
+             f"move on this item — never the result. {item_line} End by "
+             "asking what they get."),
+            scripted, verdict=("unclear" if intent == "FRUSTRATED"
+                               else "where_to_start"),
+            intent_name=("frustrated" if intent == "FRUSTRATED"
+                         else "where_to_start"))
+        return _turn(said, "not_an_attempt",
+                     "", "support" if intent == "FRUSTRATED" else "step")
+
     # STEP_ANSWER (and anything unrecognized): the CAS decides.
     cleaned = _intent.clean_answer(student)
     if not cleaned:
+        # Unreadable, not wrong: no miss, no ladder move, and the reply shows
+        # the shape to type instead of repeating the item back at them.
+        state["unreadable"] = state.get("unreadable", 0) + 1
+        scripted = ("That did not come through as math, so nothing was marked. "
+                    "Send just the line you got, written like 3x = 9 or "
+                    "x = 4.")
+        if state["unreadable"] >= 2:
+            scripted += " Tap fx for the fraction, root and symbol keys."
         return _turn(_say(
-            "The student's message did not parse as a math response. Say so "
-            "in one sentence and ask them to send just the expression they "
-            f"got, or a question. {item_line}",
-            "I couldn't match that to this item. Send just the math you got, "
-            "or ask me for a hint."), "not_an_attempt")
+            "The student's message did not parse as a math response, so it is "
+            "unreadable rather than wrong. Do not blame them and do not repeat "
+            "the whole item. Show one short example of the form to type and "
+            f"ask for just that line. {item_line}",
+            scripted, verdict="unreadable"), "not_an_attempt", "",
+            "format_help")
+    state["unreadable"] = 0
 
     verdict = _practice_verdict(prompt or expected, cleaned)
     status = verdict.status
@@ -427,14 +780,39 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
         return _turn(_say(
             "Our math checker VERIFIED this attempt correct. Confirm warmly "
             "in one sentence and ask what they want to practise next. Do not "
-            "restate the answer.", "✔ Verified — nice work."),
+            "restate the answer.", "✔ Verified — nice work.",
+            verdict="correct"),
             "correct", detail, "success")
+
+    if status == "echo":
+        return _turn(_say(
+            "The student sent the item back as if it were their answer. Ask "
+            "for the first move they would make on it — no verdict, no hint "
+            f"spent. {item_line}",
+            "That's the item itself, not your working. What's your first move "
+            "on it?"), "not_an_attempt", detail, "bubble")
+
+    if status == "incomplete":
+        # Right but not finished (one of two solutions): what's missing, and
+        # explicitly not a miss.
+        return _turn(_say(
+            f"SymPy says this attempt is partly right: {detail}. Say what is "
+            "right and ask for what is still missing, in one sentence. Do not "
+            f"name the missing value. {item_line}",
+            "You've got part of it. What's still missing — is there another "
+            "value, or a final simplification? Send that line.",
+            verdict="partial"), "partial", detail, "partial")
 
     if status == "incorrect":
         state["misses"] += 1
-        return _turn(_hint(min(4, state["hints"] + 1),
+        repeats = any(h.get("role") == "user"
+                      and str(h.get("content", "")).strip() == student.strip()
+                      for h in history[-4:])
+        return _turn(_hint(min(4, state["hints"] + (2 if repeats else 1)),
                            f"Their attempt was {cleaned}, which the checker "
-                           "says is not equivalent to the target yet."),
+                           "says is not equivalent to the target yet."
+                           + (" They sent the same attempt twice, so change "
+                              "the angle." if repeats else "")),
                      "incorrect", detail, "hint")
 
     if not (prompt or expected):
@@ -472,8 +850,6 @@ def api_tutor_chat(payload: dict, db: Session = Depends(get_db)):
     Server-side conversation state is shared with the practice page via
     DEMO_HISTORY so both surfaces continue one thread.
     """
-    from . import config as _config
-    from . import nebius as _nebius
     from .verifier import MAX_LEN as _MAX_LEN
 
     message = str(payload.get("message", "") or "")[:_MAX_LEN].strip()
@@ -548,37 +924,39 @@ def api_tutor_chat(payload: dict, db: Session = Depends(get_db)):
                      "the first step on your own.")
         return {"reply": reply, "mode": "assignment", "revealed": False}
 
-    # --- Lesson / general context: Socratic guidance, answers never given.
+    # --- Lesson / general context: the same brain, never a worked answer.
     lesson_title = str(context.get("lesson_title", "") or "")[:200]
     lesson_meta = str(context.get("lesson_meta", "") or "")[:200]
-    prompt_bits = [f"Student message: {message}"]
-    if lesson_title:
-        prompt_bits.append(f"Current lesson: {lesson_title} ({lesson_meta})")
     history = DEMO_HISTORY.setdefault("float-tutor:general", [])
     if wants_answer:
         reply = ("I won't give the final answer — but I will get you there. "
                  "What have you tried so far? Show me your last step and "
                  "I'll point at the next move.")
-    elif _config.ai_configured():
-        try:
-            reply = _nebius.socratic_reply(
-                {"problem": " ".join(prompt_bits),
-                 "step": "general question", "expected": "(withheld)",
-                 "student": message, "verdict": "unverifiable",
-                 "verdict_detail": "general chat: no expected step",
-                 "ai_judge": "n/a", "hint_level": 1,
-                 "step_index": 0, "total_steps": 1,
-                 "allow_reveal": False},
-                history,
-            )
-        except Exception as exc:
-            reply = (f"Live tutor unavailable ({exc}). Break the problem "
-                     "into the smallest next step and tell me what you tried.")
     else:
-        reply = ("**Demo mode** — here's how to start: write down what the "
-                 "problem gives you and what it's asking for, try the "
-                 "smallest first step, and tell me what you got. "
-                 "Add your Nebius key for live Socratic tutoring.")
+        from . import float_chat as _chat
+        from . import float_intent as _fi
+
+        lesson_note = lesson_meta or "no topic given"
+        said = _chat.reply(
+            user_text=message, history=history,
+            course_ref=str(context.get("course", "") or ""),
+            intent=("concept" if _fi.classify(message, False) ==
+                    "CONCEPT_QUESTION" else "chat"),
+            turn=_chat.turn_context(
+                problem=lesson_title or "(no problem open yet)",
+                verdict="unclear", intent="concept_question",
+                mode="practice", first_name=_student_first_name(db, 1),
+                notation=lesson_meta, student_answer=message),
+            situation=(
+                "The student is in the AI Tutor tab with lesson context only: "
+                f"{lesson_title or 'no lesson named'} ({lesson_note}). Guide "
+                "them to state the problem and take the first small step. "
+                "Never write a worked solution or a final answer."))
+        reply = (_float_display(said[0]) if said else
+                 ("**Demo mode** — here's how to start: write down what the "
+                  "problem gives you and what it's asking for, try the "
+                  "smallest first step, and tell me what you got. "
+                  "Add your Nebius key for live Socratic tutoring."))
     history += [{"role": "user", "content": message},
                 {"role": "assistant", "content": reply}]
     return {"reply": reply, "mode": mode, "revealed": False}
@@ -692,16 +1070,41 @@ def _float_open_session(db: Session, student_id: int,
 
 def _float_log(db: Session, session_id: int, step_index: int,
                student_input: str, verdict: str, hint_level: int,
-               event_type: str = "message") -> None:
+               event_type: str = "message", *, reply_type: str = "",
+               intent: str = "", mode: str = "") -> None:
+    """Append one tutor turn.
+
+    The row keeps the fields the instructor views already read (verdict,
+    hint_level, event_type). reply_type/intent/mode are per-turn behaviour
+    metadata the spec asks for and no table column exists for, so they go to
+    the structured tutor log rather than a schema change.
+    """
     db.add(TutorEvent(session_id=session_id, step_index=step_index,
                       student_input=student_input[:2000], verdict=verdict,
                       hint_level=hint_level, event_type=event_type))
     db.commit()
+    if reply_type or intent or mode:
+        import logging as _logging
+
+        _logging.getLogger("mathpilot.tutor").info(
+            "tutor_turn session=%s step=%s intent=%s reply_type=%s "
+            "verdict=%s hint_level=%s mode=%s",
+            session_id, step_index, intent or "-", reply_type or "-",
+            verdict or "-", hint_level, mode or "practice")
 
 
-def _float_current_prompt(session: TutorSession) -> str:
+def _student_first_name(db: Session, student_id: int) -> str:
+    row = db.query(User).filter(User.id == student_id).first()
+    parts = str(getattr(row, "name", "") or "").split() if row else []
+    return parts[0] if parts else ""
+
+
+def _float_current_prompt(session: TutorSession | None) -> str:
     import json as _json
 
+    if session is None:
+        return ("Send me an equation and I'll guide you step by step. "
+                "I won't give you the answer — you'll find it yourself.")
     try:
         plan = _json.loads(session.solution_plan_json or "[]")
     except Exception:
@@ -715,7 +1118,7 @@ def _float_current_prompt(session: TutorSession) -> str:
 
 
 def _float_hint(step: dict, hint_level: int, miss_count: int,
-                step_no: int) -> tuple[str, int]:
+                step_no: int, avoid: str = "") -> tuple[str, int]:
     """Hint ladder. Returns (reply, new_hint_level). Never reveals results."""
     import hashlib
 
@@ -742,29 +1145,59 @@ def _float_hint(step: dict, hint_level: int, miss_count: int,
                  f"to your problem: {instruction} What do you get? "
                  f"(That example solves to y = {ans} — yours is different.)")
     else:
-        reply = (f"Let's split it into micro-steps. First, copy down just "
-                 f"the left side of your equation. Then copy the right side. "
-                 f"Now: {instruction} If it's still stuck, ask your "
-                 f"instructor about this step in class.")
+        # Top rung: rotate so a stuck student never reads the same advice
+        # twice in a row.
+        openers = (
+            "First, copy down just the left side of your equation. Then copy "
+            "the right side.",
+            "First, write down only the one operation this step asks for.",
+            "First, look at what you already have and name the piece that is "
+            "still untouched.",
+        )
+        closer = ("If it's still stuck, re-read the worked example in the "
+                  "lesson, or ask your instructor about this step. Which of "
+                  "those two parts can you do now?"
+                  if miss_count % 2 else
+                  "If it's still stuck, ask your instructor about this step "
+                  "in class. What is the first piece you can write down?")
+        pick = miss_count % len(openers)
+        if avoid:
+            # A help request on a step already at the top rung would otherwise
+            # read the same sentence again, so move off the previous wording.
+            last = next((k for k, o in enumerate(openers) if o in avoid), None)
+            if last is not None:
+                pick = (last + 1) % len(openers)
+        reply = (f"Let's split it into micro-steps. {openers[pick]} "
+                 f"Now: {instruction} {closer}")
     return reply, level
 
 
-def _step_body(llm_text: str) -> str:
-    """Return the model's wording with any step label it re-added removed.
+def _model_body(llm_text: str) -> str:
+    """Return the model's wording with any engine label it re-added removed.
 
-    The engine supplies the "Step N:" label itself, so a reply that opens
-    "Great! Step 3: Check by…" would otherwise show the label twice. Only a
-    real label is removed: prose that merely starts with a sentence is left
-    alone.
+    The engine prints "Step N:" and "Hint N —" itself. A model that copies a
+    label out of the previous message would show the student two labels, or a
+    rung number inside a step reply ("Step 2: Hint 4 — …"). Only leading
+    labels go: prose that merely starts with a sentence is left alone.
     """
     import re as _re
 
-    body = llm_text.strip()
-    m = _re.match(r"([^.!?\n]{0,30}[!.?\n]\s*)?(step\s*\d+\s*[:.\-—]\s*)",
-                  body, flags=_re.IGNORECASE)
-    if not m:
-        return body
-    return (m.group(1) or "") + body[m.end():]
+    step = _re.compile(r"([^.!?\n]{0,30}[!.?\n]\s*)?(step\s*\d+\s*[:.\-—]\s*)",
+                       _re.IGNORECASE)
+    hint = _re.compile(
+        r"^\s*(?:\U0001F4A1\s*)?(?:"
+        r"(?:hint|level|ladder|rung)[\s\-]*(?:level|rung)?\s*\d*\s*[:\-–—]\s*"
+        r"|(?:hint\s+)?\d+\s*[:\-–—]\s*)", _re.IGNORECASE)
+    body = (llm_text or "").strip()
+    for _ in range(3):
+        before = body
+        m = step.match(body)
+        if m:
+            body = (m.group(1) or "") + body[m.end():]
+        body = hint.sub("", body.strip(), count=1).strip()
+        if body == before:
+            break
+    return body
 
 
 def _float_display(reply: str) -> str:
@@ -772,9 +1205,10 @@ def _float_display(reply: str) -> str:
 
     Instructions are already prose; this cleans any embedded CAS
     spellings (2*x, x**2, pi) without touching $...$ math regions'
-    structure. Safe to run on every reply.
+    structure, and delimits bare LaTeX so it renders as math instead of
+    showing a student backslash code. Safe to run on every reply.
     """
-    from .verifier import display_math as _dm
+    from .verifier import display_math as _dm, wrap_bare_latex as _wrap
 
     parts = reply.split("$")
     for i in range(0, len(parts), 2):  # even indices: outside math
@@ -785,7 +1219,7 @@ def _float_display(reply: str) -> str:
         # math ("of $f(x)$ next" -> "of$f(x)$next"), so keep the pad.
         pad_l = chunk[:len(chunk) - len(chunk.lstrip())]
         pad_r = chunk[len(chunk.rstrip()):]
-        parts[i] = pad_l + _dm(chunk) + pad_r
+        parts[i] = pad_l + _wrap(_dm(chunk)) + pad_r
     return "$".join(parts)
 
 
@@ -802,13 +1236,16 @@ def _leak_pattern(exp: str) -> str | None:
     e = str(exp or "").strip().lower()
     if not e:
         return None
+    # A sentence stop after the value is still a leak ("so x = 3."), while a
+    # longer number is not ("x = 3.5" must not match a value of "3").
+    tail = r"(?!\w)(?!\.\d)"
     if not _re.search(r"[a-z]", e):
-        return rf"=\s*{_re.escape(e)}(?![\w.])"
+        return rf"=\s*{_re.escape(e)}{tail}"
     # Token-escape, then let any run of spaces match any other: the plan
     # writes "9 = 3*x" but a reply reads "9 = 3x".
     core = r"\s*".join(_re.escape(t) for t in e.split())
     core = core.replace(r"\*", r"\*{0,1}")
-    return rf"(?<![\w.]){core}(?![\w.])"
+    return rf"(?<![\w.]){core}{tail}"
 
 
 def _reply_leaks(reply: str, expressions) -> bool:
@@ -856,6 +1293,61 @@ def _reply_reveals(reply: str, values) -> bool:
                for v in values)
 
 
+def _float_plan(session) -> list:
+    """The hidden solution plan, or [] — never handed to the browser."""
+    import json as _json
+
+    if session is None:
+        return []
+    try:
+        plan = _json.loads(session.solution_plan_json or "[]")
+    except Exception:
+        return []
+    return plan if isinstance(plan, list) else []
+
+
+def _float_unreached_results(session, *, include_current: bool = False) -> list:
+    """Step results the student has not produced yet — the leak set."""
+    if session is None:
+        return []
+    plan = _float_plan(session)
+    start = session.current_step_index if include_current else \
+        session.current_step_index + 1
+    return [st.get("expected_expression", "") for st in plan[start:]]
+
+
+def _float_jump_ahead(plan: list, idx: int, message: str,
+                      problem: str = "") -> int | None:
+    """Index of a later step this message already answers, else None.
+
+    A student who does two steps in one message is ahead, not wrong, so the
+    checker looks forward before the miss is recorded. Only real work steps
+    count: a bare "0" or "10" would match a substitution check by accident,
+    and echoing the problem text is not an answer.
+    """
+    from . import float_plan as _plan
+    from .float_intent import clean_answer
+    from .verifier import _parse_single
+
+    from_txt = clean_answer(message)
+    if not from_txt:
+        return None
+    try:
+        if _parse_single(from_txt) == _parse_single(problem or ""):
+            return None  # the item sent back is not a step
+    except Exception:
+        pass
+    for k in range(idx + 1, len(plan)):
+        st = plan[k]
+        ct = str(st.get("check_type", "equivalent_expression")).lower()
+        exp = str(st.get("expected_expression", "") or "")
+        if ct in ("numeric_value", "conceptual", "limit") or "=" not in exp:
+            continue
+        if _plan.check_step(exp, from_txt, ct) == "correct":
+            return k
+    return None
+
+
 def _float_leak_check(reply: str, session, block_current: bool = False) -> str:
     """Answer-leak check (spec 6e): strip step results from replies.
 
@@ -867,21 +1359,79 @@ def _float_leak_check(reply: str, session, block_current: bool = False) -> str:
     """
     import json as _json
 
-    try:
-        plan = _json.loads(session.solution_plan_json or "[]")
-    except Exception:
+    plan = _float_plan(session)
+    upcoming = _float_unreached_results(
+        session, include_current=block_current)
+    if not plan or not upcoming:
         return reply
-    start = session.current_step_index if block_current else \
-        session.current_step_index + 1
-    upcoming = plan[start:] if session else []
-    if not upcoming:
-        return reply
-    if _reply_leaks(reply, [st.get("expected_expression", "")
-                            for st in upcoming]):
+    if _reply_leaks(reply, upcoming):
         cur = plan[min(session.current_step_index, len(plan) - 1)]
         return (f"Let's stay on the current step: "
                 f"{cur.get('instruction', '')} What do you get?")
     return reply
+
+
+_TRAILING_STOP = ("in", "of", "to", "for", "and", "or", "the", "a", "an",
+                  "then", "with", "by")
+
+
+def _rail_title(instruction: str) -> str:
+    """Short plain-language label for one plan step, with no maths in it.
+
+    Instructions are written for the chat ("Let u = cos(x). Rewrite …"), and
+    a clause that already states the maths reads badly once the symbols are
+    stripped, so the label comes from the first prose clause.
+    """
+    import re as _re
+
+    text = str(instruction or "")
+    parts = [p.strip() for p in
+             _re.split(r"(?<=[A-Za-z)])\s*[:.;]\s+", text) if p.strip()]
+    if not parts:
+        return ""
+    clause = next((p for p in parts if "=" not in p), parts[0])
+    clause = _re.sub(r"\$[^$]*\$", " ", clause)
+    clause = _re.sub(r"[\[\(][^\]\)]*[\]\)]?", " ", clause)
+    clause = _re.sub(r"\\[a-zA-Z]+", " ", clause)
+    clause = _re.sub(r"[^A-Za-z0-9./ ]+", " ", clause)
+    words = _re.sub(r"\s+", " ", clause).strip().split()[:5]
+    while len(words) > 1 and words[-1].lower() in _TRAILING_STOP:
+        words.pop()
+    if words:
+        words[-1] = words[-1].rstrip(".")
+    return " ".join(words)
+
+
+def _float_step_map(session: TutorSession) -> list[str]:
+    """Step titles for the student-facing map, in plan order.
+
+    A title is dropped to "Step n" when it would state the result of a step
+    the student has not finished: the linear plan writes its check as
+    "Check: put x = 3 into …", which hands over the answer two steps early.
+    """
+    import json as _json
+
+    try:
+        plan = _json.loads(session.solution_plan_json or "[]")
+    except Exception:
+        return []
+    upcoming = [st.get("expected_expression", "")
+                for st in plan[session.current_step_index:]]
+    titles = []
+    for n, st in enumerate(plan):
+        title = _rail_title(st.get("instruction", ""))
+        if not title or _reply_leaks(title, upcoming):
+            title = f"Step {n + 1}"
+        titles.append(title)
+    return titles
+
+
+def _float_last_reply(db: Session, session) -> str:
+    """The tutor's previous wording — used to keep hints from repeating."""
+    for turn in reversed(_float_history(db, session.id if session else 0)):
+        if turn.get("role") == "tutor":
+            return str(turn.get("text") or "")
+    return ""
 
 
 def _float_history(db: Session, session_id: int, limit: int = 6) -> list[dict]:
@@ -912,53 +1462,150 @@ def _float_note_reply(db: Session, session_id: int, reply: str) -> None:
         db.commit()
 
 
-def _float_say(db: Session, session, message: str, *, intent: str,
-               situation: str, fallback: str, course_ref: str = "",
-               graded: bool = False, block_current: bool = False) -> str:
-    """LLM-worded tutor reply; `fallback` when the model is unusable.
+def _float_turn(session, *, step=None, verdict="", hint_level=0, intent="",
+                student_answer="", first_name="", mode="practice",
+                repeats=False, notation="") -> str:
+    """The per-turn facts block the shared brain expects (spec section 2).
 
-    The model never decides correctness — the caller already has the CAS
-    verdict and passes it in as a fact to phrase. Replies pass the same
-    leak check as scripted ones, so a chatty model cannot spoil a step.
+    The plan is server-side only: it shapes the prompt, never the response.
     """
     from . import float_chat as _chat
 
-    text = _chat.reply(user_text=message,
-                       history=_float_history(db, session.id if session else 0),
-                       course_ref=course_ref, intent=intent,
-                       situation=situation, graded=graded)
-    if not text:
+    return _chat.turn_context(
+        problem=str(getattr(session, "problem_text", "") or ""),
+        step=step or {}, verdict=verdict, hint_level=hint_level,
+        intent=intent, mode=mode, first_name=first_name, notation=notation,
+        plan=_float_plan(session), student_answer=student_answer,
+        repeats=repeats)
+
+
+def _float_say(db: Session, session, message: str, *, intent: str,
+               situation: str, fallback: str, course_ref: str = "",
+               graded: bool = False, block_current: bool = False,
+               turn: str = "", recap: bool = False) -> str:
+    """LLM-worded tutor reply; `fallback` when the model is unusable.
+
+    The model never decides correctness — the caller already has the CAS
+    verdict and passes it in as a fact to phrase. `validate` re-asks the
+    model rather than censoring it, and the deterministic leak check still
+    runs last so a reply that survives retries can never spoil a step.
+    """
+    from . import float_chat as _chat
+
+    banned = _float_unreached_results(session, include_current=block_current)
+
+    def safe(text: str) -> bool:
+        return not (banned and _reply_leaks(text, banned))
+
+    out = _chat.reply(user_text=message,
+                      history=_float_history(db, session.id if session else 0),
+                      course_ref=course_ref, intent=intent,
+                      situation=situation, graded=graded, turn=turn,
+                      recap=recap, validate=None if recap else safe)
+    if not out:
         return fallback
-    if session:
-        text = _float_leak_check(text, session, block_current=block_current)
+    text = out[0]
+    # Two regenerations got the model no closer to the limit; the scripted
+    # line is shorter and still on-topic, so it wins over a long reply.
+    if not recap and _chat._too_long(text):
+        return fallback
+    text = (_float_leak_check(text, session, block_current=block_current)
+            if session else text)
     return _float_display(text)
+
+
+def _example_matches_problem(reply: str, problem: str) -> bool:
+    """True when a level-3 example reuses the student's own numbers.
+
+    Two shared digits is the line: one can be a coincidence ("2" in any
+    squared term), two means the worked example was copied from the problem
+    and the student has been handed their own numbers back.
+    """
+    import re as _re
+
+    mine = set(_re.findall(r"\d+", problem or ""))
+    if len(mine) < 2:
+        return False
+    return len(mine & set(_re.findall(r"\d+", reply or ""))) >= 2
 
 
 def _float_hint_said(db: Session, session, message: str, step: dict,
                      lvl: int, *, graded: bool, course_ref: str,
-                     fallback: str) -> str:
+                     fallback: str, first_name: str = "") -> str:
     """Word one hint rung with the LLM, keeping the "Hint N — " prefix.
 
     The ladder state and the rung cap stay in code; the model only phrases
     the rung it is given, so it cannot skip ahead to a worked solution.
     """
+    turn = _float_turn(session, step=step, verdict="incorrect",
+                       hint_level=lvl, intent="hint_request",
+                       student_answer=message, first_name=first_name,
+                       mode="graded" if graded else "practice")
     llm = _float_say(
         db, session, message, intent="chat", course_ref=course_ref,
-        graded=graded, fallback="", block_current=True,
+        graded=graded, fallback="", block_current=True, turn=turn,
         situation=(
             f"The student's answer to this step was not correct. Step: "
             f"{step.get('instruction', '')} Why it works: "
             f"{step.get('reason', '')}. Give exactly hint level {lvl} of 4 "
             f"(1 conceptual nudge, 2 where to look, 3 which operation to "
             f"use, 4 split into micro-steps). Never state the result of "
-            f"any step."))
+            f"any step. Open with the help itself: do not repeat the word "
+            f"Hint or number the rung, the app prints that label."
+            + (" For level 3 the worked example must use different numbers "
+               "than the student's problem." if lvl == 3 else "")))
     if not llm:
         return fallback
-    import re as _re
+    if lvl == 3 and _example_matches_problem(
+            llm, str(getattr(session, "problem_text", "") or "")):
+        return fallback
+    body = _model_body(llm)
+    if not body:
+        return fallback
+    return _float_leak_check(f"Hint {lvl} — {body}", session,
+                             block_current=True)
 
-    body = _re.sub(r"^\s*(hint\s*)?\d+\s*[—\-:]\s*", "", llm.strip(),
-                   flags=_re.IGNORECASE)
-    return _float_leak_check(f"Hint {lvl} — {body}", session)
+
+@app.post("/api/tutor/nudge")
+def api_tutor_nudge(payload: dict, db: Session = Depends(get_db)):
+    """One gentle idle nudge per step, never a second one.
+
+    The client calls this after the student has typed nothing for a while.
+    It spends no hint and reveals nothing; a step already nudged returns an
+    empty reply so the widget stays quiet.
+    """
+    ctx = payload.get("pageContext") or {}
+    if not isinstance(ctx, dict):
+        ctx = {}
+    course_id = str(ctx.get("courseId", "") or ctx.get("course", "")
+                    or "default")
+    session = _float_open_session(db, 1, course_id)
+    if not session or session.status != "active" or not session.total_steps:
+        return {"reply": "", "replyType": "noop"}
+    idx = session.current_step_index
+    if db.query(TutorEvent).filter(
+            TutorEvent.session_id == session.id,
+            TutorEvent.step_index == idx,
+            TutorEvent.event_type == "nudge").count():
+        return {"reply": "", "replyType": "noop"}
+    plan = _float_plan(session)
+    step = plan[idx] if 0 <= idx < len(plan) else {}
+    reply = ("Want a hint, or keep going? " + (
+        f"You were on: {step.get('instruction', '')} What do you get?"
+        if step else "Send me the next line of your work."))
+    reply = _float_display(reply)
+    _float_log(db, session.id, idx, "", "idle-nudge", session.hints_used,
+               "nudge", reply_type="support", intent="idle",
+               mode="graded" if session.graded_mode else "practice")
+    out = {"reply": reply, "replyType": "support",
+           "stepIndex": idx, "totalSteps": session.total_steps,
+           "stepStatus": "waiting", "hintLevel": session.hints_used,
+           "sessionDone": False}
+    titles = _float_step_map(session)
+    if titles:
+        out["steps"] = titles
+    _float_note_reply(db, session.id, reply)
+    return out
 
 
 @app.post("/api/tutor/message")
@@ -967,7 +1614,7 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
 
     Input:  {message, pageContext} (student/course from session, never client).
     Output: {reply, replyType, stepIndex, totalSteps, stepStatus, hintLevel,
-             sessionDone, recap?}.
+             sessionDone, steps?, recap?}.
     """
     import json as _json
     from datetime import datetime, timezone
@@ -994,6 +1641,8 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
 
     graded = (ctx_type == "assignment"
               and str(ctx.get("mode", "practice")) == "graded")
+    mode_name = "graded" if graded else "practice"
+    student_name = _student_first_name(db, student_id)
     session = _float_open_session(db, student_id, course_id)
     lowered = message.lower()
 
@@ -1001,18 +1650,23 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
         return _json.dumps(plan)
 
     def _recap(sess: TutorSession) -> dict:
-        try:
-            plan = _json.loads(sess.solution_plan_json or "[]")
-        except Exception:
-            plan = []
+        from .verifier import display_math as _dm
+
+        plan = _float_plan(sess)
+        # The card drops each result into $...$ for KaTeX, and CAS spellings
+        # render as typed there: "(x - 3)*(x + 2)" shows a literal ∗.
+        # `own` is what the student typed and the checker accepted, so the
+        # recap reads as their work, not a solution pasted from the plan.
         steps = [{"n": i + 1,
                   "action": s.get("instruction", ""),
-                  "result": s.get("expected_expression", ""),
+                  "result": _dm(s.get("expected_expression", "")),
+                  "own": _dm(s.get("student_form", "")
+                             or s.get("expected_expression", "")),
                   "why": s.get("reason", "")}
                  for i, s in enumerate(plan)]
-        answer = plan[-2].get("expected_expression", "") if len(plan) >= 2 else ""
-        check = (plan[-1].get("expected_expression", "")
-                 if plan else "")
+        answer = _dm(plan[-2].get("expected_expression", "")
+                     if len(plan) >= 2 else "")
+        check = _dm(plan[-1].get("expected_expression", "") if plan else "")
         recap = {
             "title": f"Full solution — {sess.problem_text}",
             "steps": steps, "answer": answer, "check": check,
@@ -1020,8 +1674,8 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                      "then the coefficient, then verify by substituting."),
         }
         if sess.total_misses:
-            recap["note"] = ("You needed a few hints — that's normal. "
-                             "Re-try a similar problem to lock it in.")
+            recap["note"] = ("You needed a few hints along the way — that's "
+                             "normal, and you still did the steps yourself.")
         return recap
 
     def _shape(sess: TutorSession, reply: str, rtype: str,
@@ -1031,6 +1685,9 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                "stepIndex": sess.current_step_index,
                "totalSteps": sess.total_steps, "stepStatus": status,
                "hintLevel": hint, "sessionDone": done}
+        titles = _float_step_map(sess)
+        if titles:
+            out["steps"] = titles
         if recap is not None:
             out["recap"] = recap
         # Keep the pair together so the next turn can be answered in context.
@@ -1134,12 +1791,23 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
     def _bubble(reply_text: str, verdict: str, rtype: str = "bubble") -> dict:
         if session:
             _float_log(db, session.id, session.current_step_index,
-                       message, verdict, session.hints_used, "message")
+                       message, verdict, session.hints_used, "message",
+                       reply_type=rtype, intent=intent.lower(),
+                       mode=mode_name)
             return _shape(session, reply_text, rtype, "waiting",
                           session.hints_used)
         return {"reply": reply_text, "replyType": rtype, "stepIndex": 0,
                 "totalSteps": 0, "stepStatus": "waiting", "hintLevel": 0,
                 "sessionDone": False}
+
+    def _turn_ctx(step=None, verdict: str = "", hint: int | None = None,
+                  intent_name: str = "", repeats: bool = False) -> str:
+        return _float_turn(
+            session, step=step or {}, verdict=verdict,
+            hint_level=(session.hints_used if hint is None else hint)
+            if session else 0,
+            intent=intent_name or intent.lower(), student_answer=message,
+            first_name=student_name, mode=mode_name, repeats=repeats)
 
     if intent == "OFF_TOPIC":
         fallback = ("I'm your math tutor — let's stick to math and course "
@@ -1148,15 +1816,16 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                                        "step by step."))
         return _bubble(_float_say(
             db, session, message, intent="off_topic", course_ref=course_ref,
-            graded=graded, fallback=fallback,
+            graded=graded, fallback=fallback, turn=_turn_ctx(),
             situation="The student asked about something outside the course "
                       "sequence. Decline in one sentence and redirect to "
                       "course math."), "off-topic")
 
     if intent == "CONCEPT_QUESTION":
         situation = ("The student asked a conceptual math question. Answer "
-                     "the idea briefly and correctly, then invite them to "
-                     "try one step themselves.")
+                     "the idea briefly and correctly in 2-3 sentences with a "
+                     "DIFFERENT example (different numbers than their "
+                     "problem), then invite them to try one step themselves.")
         fallback = ("Good question! Think of a balance scale: whatever you "
                     "do to one side, you must do to the other, or it tips. "
                     "That's why we apply the same operation to both sides. "
@@ -1170,7 +1839,8 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                           "never state or work out their problem's result.")
         return _bubble(_float_say(
             db, session, message, intent="concept", course_ref=course_ref,
-            graded=graded, fallback=fallback, situation=situation), "concept")
+            graded=graded, fallback=fallback,
+            turn=_turn_ctx(verdict="unclear"), situation=situation), "concept")
 
     if intent == "CHAT":
         situation = ("The student is chatting, not answering. Reply warmly "
@@ -1186,7 +1856,8 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                           f"to it without solving it for them.")
         return _bubble(_float_say(
             db, session, message, intent="chat", course_ref=course_ref,
-            graded=graded, fallback=fallback, situation=situation), "chat")
+            graded=graded, fallback=fallback, turn=_turn_ctx(),
+            situation=situation), "chat")
 
     if intent == "ANSWER_REQUEST":
         # Policy stays in code: the model may phrase the refusal, never
@@ -1198,6 +1869,7 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
         reply = _float_say(
             db, session, message, intent="chat", course_ref=course_ref,
             graded=graded, fallback=fallback, block_current=True,
+            turn=_turn_ctx(verdict="unclear", intent_name="answer_request"),
             situation="The student is asking for the answer outright. "
                       "Refuse kindly, do not reveal any step result, and "
                       "point them at the next move they can try.")
@@ -1214,6 +1886,7 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
             return _bubble(_float_say(
                 db, session, message, intent="chat", course_ref=course_ref,
                 graded=graded, fallback=_float_current_prompt(None),
+                turn=_turn_ctx(),
                 situation="The student says they are stuck but no problem is "
                           "open yet. Ask which problem they are working on."),
                 "help")
@@ -1226,23 +1899,109 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                          f"{step.get('instruction', '')}")
                 _float_log(db, session.id, session.current_step_index,
                            message, "hint-capped", session.hints_used + 1,
-                           "hint")
+                           "hint", reply_type="hint", intent="hint_request",
+                           mode="graded")
                 session.hints_used += 1
                 db.commit()
                 return _shape(session, reply, "hint", "waiting",
                               session.hints_used)
             reply, lvl = _float_hint(step, session.hints_used,
                                      session.total_misses,
-                                     session.current_step_index + 1)
+                                     session.current_step_index + 1,
+                                     avoid=_float_last_reply(db, session))
             session.hints_used = lvl
             db.commit()
             _float_log(db, session.id, session.current_step_index,
-                       message, "hint", lvl, "hint")
+                       message, "hint", lvl, "hint",
+                       reply_type="hint", intent="hint_request",
+                       mode=mode_name)
             reply = _float_hint_said(db, session, message, step, lvl,
                                      graded=graded, course_ref=course_ref,
-                                     fallback=reply)
+                                     fallback=reply,
+                                     first_name=student_name)
             return _shape(session, _float_display(reply), "hint", "waiting",
                           lvl)
+
+    if intent in ("START_STEP", "FRUSTRATED"):
+        # "What should I do?" and "I give up" are not wrong answers: nothing
+        # is graded, no hint is spent, no miss is recorded. The student gets
+        # the current step back as a single action — the smallest piece the
+        # plan offers when they are frustrated.
+        plan_s = _float_plan(session)
+        idx = session.current_step_index if session else 0
+        step_s = plan_s[idx] if 0 <= idx < len(plan_s) else {}
+        turn = _float_turn(
+            session, step=step_s, verdict="unclear",
+            hint_level=session.hints_used if session else 0,
+            intent=("where_to_start" if intent == "START_STEP"
+                    else "frustrated"),
+            student_answer=message, first_name=student_name, mode=mode_name)
+        if not step_s:
+            return _bubble(_float_say(
+                db, session, message, intent="chat", course_ref=course_ref,
+                graded=graded, turn=turn,
+                fallback=_float_current_prompt(session),
+                situation=("The student is lost and no step is open yet. Ask "
+                           "for the equation, in one sentence, and offer to "
+                           "take Step 1 together.")),
+                "support", rtype="support")
+        asks = db.query(TutorEvent).filter(
+            TutorEvent.session_id == session.id,
+            TutorEvent.step_index == idx,
+            TutorEvent.verdict.in_(("where-to-start", "frustrated"))).count()
+        if asks >= 2:
+            # A third ask means restating the step is not helping: climb one
+            # rung of the ladder instead.
+            cap = 2 if (graded and GRADED_HINTS_ONLY) else 4
+            hlvl = min(session.hints_used + 1, cap)
+            scripted, _ = _float_hint(step_s, hlvl - 1, session.total_misses,
+                                      idx + 1,
+                                      avoid=_float_last_reply(db, session))
+            session.hints_used = hlvl
+            db.commit()
+            _float_log(db, session.id, idx, message, "hint", hlvl, "hint",
+                       reply_type="hint", intent="hint_request", mode=mode_name)
+            return _shape(
+                session,
+                _float_display(_float_hint_said(
+                    db, session, message, step_s, hlvl, graded=graded,
+                    course_ref=course_ref, fallback=scripted,
+                    first_name=student_name)),
+                "hint", "waiting", hlvl)
+        micro = [m for m in (step_s.get("micro_steps") or []) if m]
+        action = (micro[0] if intent == "FRUSTRATED" and micro
+                  else step_s.get("instruction", ""))
+        step_no = idx + 1
+        scripted = (
+            f"This one is tricky, and that's okay. Let's make it smaller: "
+            f"{action} What do you get?"
+            if intent == "FRUSTRATED" else
+            f"Step {step_no}: {action} What do you get?")
+        situation = (
+            f"The student is frustrated. Acknowledge in one sentence, then "
+            f"give only this smaller move: {action}. Do not repeat the whole "
+            "step and do not state any result."
+            if intent == "FRUSTRATED" else
+            f"The student asked what to do. Give only this action for step "
+            f"{step_no}: {action}. End with one question asking what they get. "
+            "Never state the result of the step.")
+        said = _float_say(db, session, message, intent="chat",
+                          course_ref=course_ref, graded=graded,
+                          fallback=scripted, turn=turn, block_current=True,
+                          situation=situation)
+        if intent == "START_STEP" and said != scripted:
+            said = f"Step {step_no}: {_model_body(said)}"
+        _float_log(db, session.id, idx, message,
+                   "where-to-start" if intent == "START_STEP" else "frustrated",
+                   session.hints_used, "message",
+                   reply_type=("step" if intent == "START_STEP" else "support"),
+                   intent=("where_to_start" if intent == "START_STEP"
+                           else "frustrated"), mode=mode_name)
+        return _shape(
+            session,
+            _float_display(_float_leak_check(said, session)),
+            "step" if intent == "START_STEP" else "support", "waiting",
+            session.hints_used)
 
     # "New problem" / "similar problem" resets or branches the thread.
     if lowered.strip() in ("new problem", "new question", "restart",
@@ -1417,6 +2176,17 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
     check_type = step.get("check_type", "equivalent_expression")
     verdict = _plan.check_step(expected, message, check_type)
 
+    jumped_from = None
+    if verdict == "incorrect":
+        jump = _float_jump_ahead(plan, session.current_step_index, message,
+                                 session.problem_text)
+        if jump is not None:
+            # Working two steps in one message is skill, not an error.
+            jumped_from = session.current_step_index
+            step = plan[jump]
+            session.current_step_index = jump
+            verdict = "correct"
+
     if verdict == "unclear":
         # One notation retry: the LLM rewrites what the student typed into
         # CAS syntax, then SymPy judges that rewrite. The model's math is
@@ -1458,36 +2228,49 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                           done=True, recap=recap)
         db.commit()
         _float_log(db, session.id, session.current_step_index - 1,
-                   message, "correct", 0)
+                   message, "correct", 0, "message", reply_type="praise",
+                   intent="step_answer", mode=mode_name)
         nxt = plan[session.current_step_index]
         step_no = session.current_step_index + 1
-        reply = (f"Correct! Step {step_no}: "
+        ahead = (jumped_from is not None)
+        covered = (f"Nice — that covers steps {jumped_from + 1} to "
+                   f"{step_no - 1}. " if ahead else "Correct! ")
+        reply = (f"{covered}Step {step_no}: "
                  f"{nxt['instruction']} What do you get?")
         llm = _float_say(
             db, session, message, intent="chat", course_ref=course_ref,
             graded=graded, fallback="",
+            turn=_float_turn(
+                session, step=nxt, verdict="correct", intent="step_answer",
+                student_answer=message, first_name=student_name,
+                mode=mode_name),
             situation=(
-                "SymPy verified the student's last answer as CORRECT. "
-                "Celebrate it in one short sentence, then ask for step "
-                f"{step_no} only: {nxt['instruction']} Do not state the "
-                "result of that step or any later one."))
+                covered + ("The student answered ahead, so say which steps are "
+                           "now done without restating any of their results. "
+                           if ahead else "")
+                + "Our math checker VERIFIED the student's last answer as "
+                "correct. Confirm in a few words and name what they did well, "
+                f"then give only this next action: {nxt['instruction']} Do not "
+                "state the result of that step or any later one."))
         if llm:
-            reply = f"Step {step_no}: {_step_body(llm)}"
+            reply = f"Step {step_no}: {_model_body(llm)}"
         return _shape(session, _float_display(
-            _float_leak_check(reply, session)),
+            _float_leak_check(reply, session, block_current=True)),
             "step", "waiting", 0)
 
     if verdict == "partial":
         # Correct but incomplete (e.g. one of two solutions): prompt for
         # the rest, do NOT count as a miss.
         _float_log(db, session.id, session.current_step_index,
-                   message, "partial", session.hints_used)
+                   message, "partial", session.hints_used, "message",
+                   reply_type="partial", intent="step_answer", mode=mode_name)
         fallback = ("You found one solution. Is there another? "
                     f"({step.get('instruction', '')})")
         return _shape(
             session, _float_say(
                 db, session, message, intent="chat", course_ref=course_ref,
                 graded=graded, fallback=fallback,
+                turn=_turn_ctx(step, "partial"),
                 situation=(
                     "SymPy verified the student has one correct solution but "
                     "this step needs more. Say what is still missing in one "
@@ -1500,39 +2283,48 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
         # for instead of repeating one canned parse-error line forever.
         session.total_misses += 0  # explicit: unclear never counts
         _float_log(db, session.id, session.current_step_index,
-                   message, "unclear", session.hints_used)
+                   message, "unclear", session.hints_used, "message",
+                   reply_type="format_help", intent="step_answer",
+                   mode=mode_name)
         recent_unclear = db.query(TutorEvent).filter(
             TutorEvent.session_id == session.id,
             TutorEvent.verdict == "unclear").count()
-        from .verifier import display_math as _dm
-
-        expect = _dm(step.get("expected_expression", ""))
-        fallback = (f"I couldn't match that to this step. "
-                    f"{step.get('instruction', '')} For example, write it "
-                    f"like: {expect}.")
+        # The step's own expected expression IS the result, so the format
+        # example shows the shape with different letters and numbers.
+        expect = "5y = 20"
+        fallback = ("I couldn't match that to this step. Write just the line "
+                    f"for this one move, write it like {expect}. "
+                    "What do you get?")
         if recent_unclear >= 2:
             fallback += (" Tap fx for symbols — the toolbar above the typing "
                          "box has everything you need.")
         reply = _float_say(
             db, session, message, intent="chat", course_ref=course_ref,
-            graded=graded, fallback=fallback,
+            graded=graded, fallback=fallback, block_current=True,
+            turn=_turn_ctx(step, "unreadable"),
             situation=(
-                "The checker could not read the student's last message. Do "
-                "not scold or repeat a format lecture. Restate in plain "
-                f"words what this step asks for ({step.get('instruction', '')}) "
-                f"and ask them for just that one thing. Never reveal the "
-                f"result, which is {expect}."))
+                "The checker could not read the student's message, so it is "
+                "unreadable, not wrong. Do not blame them and do not repeat "
+                "the whole step. Show how to type the answer for THIS step "
+                f"with one format example (write it like {expect}) and ask "
+                "them to send just that."))
         return _shape(session, _float_leak_check(reply, session),
                       "bubble", "waiting", session.hints_used)
 
     # Incorrect: hint ladder (graded caps at level 2, recap deferred).
+    same_before = db.query(TutorEvent).filter(
+        TutorEvent.session_id == session.id,
+        TutorEvent.step_index == session.current_step_index,
+        TutorEvent.verdict == "incorrect",
+        TutorEvent.student_input == message[:2000]).count()
     session.total_misses += 1
     if graded and GRADED_HINTS_ONLY:
         lvl = min(session.hints_used + 1, 2)
         session.hints_used = lvl
         db.commit()
         _float_log(db, session.id, session.current_step_index,
-                   message, "incorrect", lvl, "graded_use")
+                   message, "incorrect", lvl, "graded_use",
+                   reply_type="hint", intent="step_answer", mode="graded")
         reply, _ = _float_hint(step, lvl - 1, session.total_misses,
                                session.current_step_index + 1)
         # Strip level-3+ content: cap means rung 1-2 wording only.
@@ -1540,18 +2332,27 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                  f"Try again: {step['instruction']}")
         reply = _float_hint_said(db, session, message, step, lvl,
                                  graded=True, course_ref=course_ref,
-                                 fallback=reply)
+                                 fallback=reply, first_name=student_name)
         return _shape(session, _float_display(reply), "hint", "waiting", lvl)
+    prev_said = _float_last_reply(db, session)
     reply, lvl = _float_hint(step, session.hints_used,
                              session.total_misses,
-                             session.current_step_index + 1)
+                             session.current_step_index + 1,
+                             avoid=prev_said)
+    if same_before and lvl < 4:
+        # The same miss twice means the last hint did not land: skip that rung
+        # so the student never reads the same advice two turns running.
+        reply, lvl = _float_hint(step, lvl, session.total_misses,
+                                 session.current_step_index + 1,
+                                 avoid=prev_said)
     session.hints_used = lvl
     db.commit()
     _float_log(db, session.id, session.current_step_index,
-               message, "incorrect", lvl, "hint")
+               message, "incorrect", lvl, "hint",
+               reply_type="hint", intent="step_answer", mode=mode_name)
     reply = _float_hint_said(db, session, message, step, lvl,
                              graded=graded, course_ref=course_ref,
-                             fallback=reply)
+                             fallback=reply, first_name=student_name)
     return _shape(session, _float_display(
         _float_leak_check(reply, session)),
         "hint", "waiting", lvl)
@@ -1983,9 +2784,11 @@ def instructor_dashboard(request: Request, db: Session = Depends(get_db)):
     from .courses import get_course_options
     activities = db.query(Activity).all()
     courses = db.query(Course).all()
+    shared_files = db.query(SharedFile).order_by(SharedFile.created_at.desc()).all()
     return templates.TemplateResponse(request, "instructor_dashboard.html", {
         "request": request, "activities": activities, "courses": courses,
         "course_options": get_course_options(),
+        "files": shared_files,
         "demo": not config.ai_configured(),
     })
 
@@ -2436,9 +3239,9 @@ def api_assignments_generate(payload: dict, db: Session = Depends(get_db)):
             raise HTTPException(404, "Source lesson not found")
         if lesson.status not in ("approved", "published"):
             raise HTTPException(400, "Source lesson must be approved first")
-        from .schemas import lesson_content_from_json
+        from .schemas import lesson_content_from_json, lesson_assignment_context
         content = lesson_content_from_json(lesson.instructor_content_json)
-        scoped = "\n".join(content.objectives)
+        scoped = lesson_assignment_context(content)
         notes = (scoped + "\n" + notes).strip()
     try:
         result = generate_mod.generate_questions(
@@ -2841,9 +3644,12 @@ def student_lesson_alias(link_id: str, request: Request):
 
 
 def _assignment_items_for_student(db: Session, pub) -> list[dict]:
-    """Student-safe assignment items: prompts + step descriptions + hints.
+    """Student-safe assignment items: prompts + progressive hints only.
 
-    Solutions never leave the server; expected answers are excluded.
+    Solutions never leave the server: expected answers AND the ordered step
+    descriptions (which spell out the worked method) are excluded. The
+    floating tutor reveals guidance one step at a time on request; the
+    assignment page itself must not pre-reveal the solution.
     """
     import json as _json
 
@@ -2863,11 +3669,6 @@ def _assignment_items_for_student(db: Session, pub) -> list[dict]:
         items.append({
             "item_id": it.get("item_id", ""),
             "prompt_latex": it.get("prompt_latex", ""),
-            "steps": [{"description": (s.get("description", "")
-                                       if isinstance(s, dict) else ""),
-                       "hints": (list(s.get("hints", []))
-                                 if isinstance(s, dict) else [])}
-                      for s in it.get("steps", [])],
             "hints": list(it.get("hints", [])),
             "difficulty": it.get("difficulty", 3),
         })
@@ -2899,11 +3700,17 @@ def student_assignment(link_id: str, request: Request,
         saved = _json.loads(sub.answers_json) if sub and sub.answers_json else {}
     except Exception:
         saved = {}
+    try:
+        attempts = _json.loads(sub.attempts_json) if sub and sub.attempts_json else {}
+    except Exception:
+        attempts = {}
     return templates.TemplateResponse(request, "student_assignment.html", {
         "request": request, "publication": pub,
         "title": asg.title or pub.title or "Untitled",
         "due": pub.due_date or "", "course": pub.assigned_course or "",
         "items": items, "saved": saved if isinstance(saved, dict) else {},
+        "attempts": attempts if isinstance(attempts, dict) else {},
+        "max_tries": MAX_TRIES,
         "submitted": bool(sub and sub.status == "submitted"),
         "submitted_at": str(sub.submitted_at)[:16] if sub and sub.submitted_at else "",
         "active_nav": "assignments",
@@ -2941,6 +3748,118 @@ def api_assignment_progress(payload: dict, db: Session = Depends(get_db)):
         sub.updated_at = datetime.now(timezone.utc)
     db.commit()
     return {"saved": True, "n_answers": len(clean)}
+
+
+MAX_TRIES = 3
+
+
+@app.post("/api/assignments/check")
+def api_assignment_check(payload: dict, db: Session = Depends(get_db)):
+    """Grade one answer server-side with the deterministic verifier.
+
+    Gives the student immediate correct/incorrect feedback WITHOUT revealing
+    the answer, and enforces a 3-try budget per question tracked in
+    attempts_json ({item_id: {tries, correct}}). A check also saves the
+    student's answer so work is never lost. Correctness is decided by SymPy
+    equivalence, never by the language model.
+    """
+    import json as _json
+
+    from .verifier import check_equivalent
+
+    link_id = str(payload.get("link_id", "") or "").strip()
+    item_id = str(payload.get("item_id", "") or "").strip()
+    answer = str(payload.get("answer", "") or "").strip()
+    pub = db.query(Publication).filter(
+        Publication.link_id == link_id).first()
+    if not pub or not pub.assignment_id:
+        raise HTTPException(404, "Assignment not found")
+    asg = db.get(Assignment, pub.assignment_id)
+    if not asg:
+        raise HTTPException(404, "Assignment not found")
+    sub = db.query(Submission).filter(
+        Submission.publication_id == pub.id,
+        Submission.user_id == 1).first()
+    if sub and sub.status == "submitted":
+        raise HTTPException(400, "Already submitted — answers are final")
+    try:
+        items = _json.loads(asg.questions_json or "[]")
+    except Exception:
+        items = []
+    item = next((it for it in items if isinstance(it, dict)
+                 and it.get("item_id") == item_id), None)
+    if item is None:
+        raise HTTPException(404, "Question not found")
+    try:
+        sols = _json.loads(asg.solutions_json or "{}")
+    except Exception:
+        sols = {}
+    expected = str((sols.get(item_id) or {}).get("final_answer_latex")
+                   or "").strip()
+    if not expected:
+        steps = item.get("steps") or []
+        if steps and isinstance(steps[-1], dict):
+            expected = str(
+                steps[-1].get("expected_input_latex") or "").strip()
+
+    if not sub:
+        sub = Submission(publication_id=pub.id, user_id=1,
+                         answers_json="{}", attempts_json="{}", status="draft")
+        db.add(sub)
+    try:
+        attempts = _json.loads(sub.attempts_json or "{}")
+    except Exception:
+        attempts = {}
+    entry = attempts.get(item_id) or {"tries": 0, "correct": False}
+    try:
+        ans_map = _json.loads(sub.answers_json or "{}")
+    except Exception:
+        ans_map = {}
+    if answer:
+        ans_map[item_id] = answer[:2000]
+
+    def _persist():
+        sub.attempts_json = _json.dumps(attempts)
+        sub.answers_json = _json.dumps(ans_map)
+        db.commit()
+
+    if entry.get("correct"):
+        return {"correct": True, "locked": True, "tries": entry.get("tries", 0),
+                "tries_left": 0, "feedback": "You already solved this one."}
+    if not answer:
+        return {"correct": False, "locked": False, "tries": entry.get("tries", 0),
+                "tries_left": MAX_TRIES - entry.get("tries", 0),
+                "feedback": "Type an answer to check it."}
+    if not expected:
+        _persist()
+        return {"correct": False, "locked": False, "tries": entry.get("tries", 0),
+                "tries_left": MAX_TRIES - entry.get("tries", 0),
+                "feedback": "This question isn't auto-checkable yet — submit "
+                            "it for your instructor to review."}
+    if entry.get("tries", 0) >= MAX_TRIES:
+        _persist()
+        return {"correct": False, "locked": True, "tries": MAX_TRIES,
+                "tries_left": 0,
+                "feedback": "You've used all 3 tries on this question. "
+                            "Review it with your instructor or move on."}
+
+    verdict = check_equivalent(answer, expected)
+    if verdict.status == "correct":
+        entry["correct"] = True
+        attempts[item_id] = entry
+        _persist()
+        return {"correct": True, "locked": True, "tries": entry.get("tries", 0),
+                "tries_left": MAX_TRIES - entry.get("tries", 0),
+                "feedback": "Great — that's correct!"}
+    entry["tries"] = entry.get("tries", 0) + 1
+    attempts[item_id] = entry
+    _persist()
+    left = MAX_TRIES - entry["tries"]
+    feedback = ("Not quite — try again." if left > 0 else
+                "That's not quite right, and you've used all 3 tries. "
+                "Review this one with your instructor.")
+    return {"correct": False, "locked": left <= 0, "tries": entry["tries"],
+            "tries_left": left, "feedback": feedback}
 
 
 @app.post("/api/assignments/submit")

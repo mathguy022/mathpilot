@@ -1,5 +1,5 @@
 """Verifier tests: correct / incorrect / equivalent / unsafe / unverifiable."""
-from app.verifier import check_equivalent, check_numeric
+from app.verifier import check_equivalent, check_factored, check_numeric
 
 
 def test_correct_exact():
@@ -117,3 +117,24 @@ def test_root_in_numerator_is_not_the_product():
 def test_nested_fraction_converts_innermost_first():
     v = check_equivalent(r"\frac{\frac{1}{2}}{3}", "1/6")
     assert v.status == "correct", f"{v.status}: {v.detail}"
+
+
+def test_factored_equation_with_zero_side():
+    """Students are told to keep "= 0"; it is not a mismatch.
+
+    The plan stores the factored form with the trailing zero, so the
+    equation side had to be dropped from the student's answer as well as
+    from the expected one — "(x-5)(x-2) = 0" used to grade incorrect.
+    """
+    exp = "(x - 5)*(x - 2) = 0"
+    for answer in ("(x-5)(x-2) = 0", "(x - 5)(x - 2) = 0", "(x-2)(x-5) = 0",
+                   "0 = (x-5)(x-2)", "(x-5)(x-2)"):
+        v = check_factored(answer, exp)
+        assert v.status == "correct", f"{answer}: {v.status} {v.detail}"
+
+
+def test_factored_still_rejects_wrong_factors():
+    exp = "(x - 5)*(x - 2) = 0"
+    assert check_factored("(x-5)(x-3) = 0", exp).status == "incorrect"
+    assert check_factored("x^2 - 7x + 10 = 0", exp).status == "incorrect"
+    assert check_factored("", exp).status == "incomplete"

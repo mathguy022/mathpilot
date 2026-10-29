@@ -119,6 +119,50 @@ class AssignmentSettings(BaseModel):
     solution_release: str = "after-due"  # after-due|after-attempts|never
 
 
+def lesson_assignment_context(content: "LessonContent") -> str:
+    """Distil a lesson into generator notes so questions match what was taught.
+
+    Passing only the objectives let the model invent off-topic problems. This
+    digest carries the section headings, the worked-example problems (with
+    their answers) and the practice problems, so generated items reuse the
+    lesson's actual concepts and difficulty.
+    """
+    lines: list[str] = []
+    topic = (content.topic or content.title or "").strip()
+    if topic:
+        lines.append(f"Lesson topic: {topic}")
+    if content.objectives:
+        lines.append("Learning objectives:")
+        lines += [f"- {o}" for o in content.objectives if str(o).strip()]
+    headings = [s.heading.strip() for s in content.sections
+                if getattr(s, "heading", "") and s.heading.strip()]
+    if headings:
+        lines.append("Sections covered: " + "; ".join(headings))
+    examples = []
+    for s in content.sections:
+        for ex in getattr(s, "examples", []) or []:
+            prob = (ex.problem_latex or "").strip()
+            ans = (ex.final_answer_latex or "").strip()
+            if prob:
+                examples.append(f"- {prob}" + (f"  [answer: {ans}]" if ans else ""))
+    if examples:
+        lines.append("Worked examples in this lesson:")
+        lines += examples
+    practice = []
+    for s in content.sections:
+        if getattr(s, "kind", "") == "practice":
+            for m in (s.math_latex or []):
+                if str(m).strip():
+                    practice.append(f"- {m.strip()}")
+            body = (s.body_markdown or "").strip()
+            if body and not practice:
+                practice.append(body)
+    if practice:
+        lines.append("Practice problems from the lesson:")
+        lines += practice
+    return "\n".join(lines).strip()
+
+
 def lesson_content_from_json(raw: str) -> LessonContent:
     """Parse stored JSON into LessonContent; corrupt data -> empty lesson."""
     import json

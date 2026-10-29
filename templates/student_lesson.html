@@ -16,7 +16,7 @@
 <div class="card" style="margin-top:16px"><h3>📖 Lesson Content</h3>
 {% for s in lesson.sections %}
 <div style="margin-top:14px"><h3>{{ s.heading }} <small class="muted">{{ s.kind|replace('_',' ') }}</small></h3>
-<div class="sec-preview">{{ s.body_markdown }}</div>
+<div class="sec-preview" data-md="{{ s.body_markdown }}">{{ s.body_markdown }}</div>
 {% for m in s.math_latex %}<p>${{ m }}$</p>{% endfor %}
 {% for e in s.examples|default([]) %}
 <details class="steps" style="margin-top:8px"><summary>Worked example {{ loop.index }}</summary>

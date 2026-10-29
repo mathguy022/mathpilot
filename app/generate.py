@@ -16,7 +16,7 @@ from .schemas import Question, QuestionStep, verify_question
 
 MAX_NOTES_CHARS = 4000
 MAX_CANDIDATES = 10
-GEN_MAX_TOKENS = 2000
+GEN_MAX_TOKENS = 3600
 # Oversampled candidate generation (and its top-up round) can exceed the
 # default 30s provider timeout on large models, so give it more headroom.
 GEN_TIMEOUT_S = 90.0
@@ -47,7 +47,8 @@ GENERATE_SYSTEM = (
     "Use 'objective' from this taxonomy only: 'linear equation', "
     "'quadratic', 'rational equation', 'linear system', 'derivative', "
     "'integral', 'limit', 'simplify', 'power function', 'exponential', "
-    "'logarithm'. Include it per step as well when "
+    "'logarithm', 'trigonometric', 'trig identity', 'unit circle'. "
+    "Include it per step as well when "
     "steps span sub-skills. "
     "For systems of equations, 'answer' must list EVERY variable "
     "(e.g. 'x=2, y=1'); for single equations list every solution "
@@ -152,6 +153,34 @@ def candidate_to_question(candidate: dict) -> Question:
                 expected_input_latex="",
                 objective_tags=[objective] if objective else [],
             ))
+    # Drop steps whose expectation carries no checkable math: the model
+    # sometimes emits an empty string, a truncated fragment (a lone \left or
+    # '+'), or a prose annotation (\text{Quadrant III}) that normalizes to
+    # words rather than an expression. Such a step can never parse, so keeping
+    # it only discards an otherwise-valid candidate; removing it never admits
+    # incorrect math. If EVERY step is junk, keep them so the gate still
+    # reports the candidate as failed rather than silently promoting an
+    # answerless question.
+    import re as _re
+    from .verifier import normalize_math
+
+    def _is_math_step(raw: str) -> bool:
+        if not raw:
+            return False
+        if r"\text" in raw or r"\mathrm" in raw or r"\mbox" in raw:
+            return False  # prose annotation, not an equation
+        norm = normalize_math(raw)
+        if not norm or not _re.search(r"[0-9a-zA-Z]", norm):
+            return False  # empty or lone operators/punctuation
+        # Pure English words (letters + spaces only, no digit or operator in
+        # the source) are explanations, not math.
+        if not _re.search(r"[0-9=^+\-*/()<>\\]", raw):
+            return False
+        return True
+
+    meaningful = [st for st in steps if _is_math_step(st.expected_input_latex)]
+    if meaningful:
+        steps = meaningful
     try:
         difficulty = int(candidate.get("difficulty", 3))
     except (TypeError, ValueError):
@@ -253,29 +282,45 @@ def generate_questions(notes: str, topic: str, num_questions: int = 5,
                     })
 
     _admit(candidates, 0)
-    # Bounded top-up: one extra model call requesting twice the shortfall.
+    # Bounded top-up loop: re-ask (keeping the SAME notes so items stay
+    # grounded in the lesson) until we reach n or exhaust the rounds.
+    notes_clause = (f" based on these notes:\n{notes_body}" if notes_body
+                    else f" about {topic}")
     top_up_calls = 0
-    if len(verified) < n:
+    max_top_ups = 3
+    produced = len(candidates)
+    while len(verified) < n and top_up_calls < max_top_ups:
         shortfall = n - len(verified)
+        ask_more = min(MAX_CANDIDATES, max(4, shortfall * 2))
+        avoid = "; ".join(sorted(seen_prompts)) or "none yet"
         top_up_prompt = (
             f"Topic: {topic}\nDifficulty (1-5): {difficulty}\n"
             f"{course_context(course_label or topic)}\n"
-            f"Generate {min(MAX_CANDIDATES, shortfall * 2)} MORE DIFFERENT "
-            f"problems about {topic} (do not repeat these prompts: "
-            f"{sorted(seen_prompts)[:n] or 'none yet'})."
+            f"Generate {ask_more} MORE DIFFERENT problems{notes_clause} "
+            f"(each must be a NEW problem; do NOT repeat any of these "
+            f"already-used prompts: {avoid[:1500]})."
         )
+        top_up_calls += 1
         try:
-            top_up_calls = 1
-            top_up_candidates = parse_candidates(nebius._chat(
+            tc = parse_candidates(nebius._chat(
                 config.NEBIUS_MATH_MODEL,
                 [{"role": "system", "content": GENERATE_SYSTEM},
                  {"role": "user", "content": top_up_prompt}],
                 max_tokens=GEN_MAX_TOKENS,
                 timeout_s=GEN_TIMEOUT_S,
             ))
-            _admit(top_up_candidates, len(candidates))
         except Exception as exc:
             discard_reasons.append(f"top-up round failed: {exc}")
+            break
+        if not tc:
+            break
+        before = len(verified)
+        _admit(tc, produced)
+        produced += len(tc)
+        # No progress this round: re-asking the same prompt is unlikely to
+        # help and only burns API calls, so stop early.
+        if len(verified) == before:
+            break
     shortfall = n - len(verified)
     return {"verified": verified[:n],
             "requested": n,
@@ -284,7 +329,7 @@ def generate_questions(notes: str, topic: str, num_questions: int = 5,
             "shortfall_reason": (
                 f"Only {len(verified)} of {n} candidates passed SymPy "
                 "verification; see discard_reasons." if shortfall else ""),
-            "discarded": len(candidates) - len(verified),
+            "discarded": produced - len(verified),
             "discard_reasons": discard_reasons,
             "truncated_notes": truncated,
             "top_up_calls": top_up_calls,

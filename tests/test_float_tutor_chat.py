@@ -215,6 +215,17 @@ def test_inline_math_spacing_is_preserved():
     assert _float_display("Divide by 3*x first.") == "Divide by 3x first."
 
 
+# 13b. Bare LaTeX in a reply showed up to the student as backslash code; it is
+# now delimited so KaTeX renders it as math.
+def test_bare_latex_is_delimited_not_shown_as_code():
+    from app.main import _float_display
+    out = _float_display(
+        "Use the formula x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}. Here a = 3.")
+    assert "$\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$" in out, out
+    # Math that already had delimiters is left exactly as it was.
+    assert _float_display("Try $\\theta$ now.") == "Try $\\theta$ now."
+
+
 # 14. Markdown emphasis is not rendered by the widget: it showed up as
 # literal asterisks and display_math then ate the space after them.
 def test_markdown_emphasis_never_reaches_the_student():
@@ -229,17 +240,71 @@ def test_markdown_emphasis_never_reaches_the_student():
         "A derivative is the slope of a line at a point.", body
 
 
-# 15. The engine adds the "Step N:" label, so a model that re-adds it must
-# not show it twice ("Step 3: Great! Step 3: Check by…").
+# 15. The engine adds the "Step N:" / "Hint N —" labels, so a model that
+# re-adds one must not show it twice.
 def test_step_label_is_never_doubled():
-    from app.main import _step_body
-    assert _step_body(
+    from app.main import _model_body
+    assert _model_body(
         "Great! Step 3: Check by putting x = 3 into 3x - 9.") == \
         "Great! Check by putting x = 3 into 3x - 9."
-    assert _step_body("Step 2: Divide both sides by 3.") == \
+    assert _model_body("Step 2: Divide both sides by 3.") == \
         "Divide both sides by 3."
+    # A rung label copied out of the previous hint must not ride into a step.
+    assert _model_body("Step 2: Hint 4 — Try listing the factor pairs.") == \
+        "Try listing the factor pairs."
+    assert _model_body("Hint Level 1: Look at the term next to x.") == \
+        "Look at the term next to x."
     # Prose that only looks like a label stays intact.
-    assert _step_body("You've got it. Now divide both sides by 3.") == \
+    assert _model_body("You've got it. Now divide both sides by 3.") == \
         "You've got it. Now divide both sides by 3."
-    assert _step_body("Nailed it! You isolated x — what comes next?") == \
+    assert _model_body("Nailed it! You isolated x — what comes next?") == \
         "Nailed it! You isolated x — what comes next?"
+    assert _model_body("Levels of difficulty aside, start with the constant."
+                       ) == "Levels of difficulty aside, start with the " \
+                           "constant."
+
+
+# 16. The tutor rail shows a named step map: the endpoint carries short
+# prose titles, never the maths or a result the student has not reached.
+def test_step_map_ships_plain_titles():
+    body = _msg("10 = 3x + 1").json()
+    assert body["steps"] == ["Subtract 1 from both sides",
+                             "Divide both sides by 3", "Check"], body
+    assert len(body["steps"]) == body["totalSteps"]
+    # The plan's own check step reads "Check: put x = 3 into 3*x + 1", which
+    # would hand over the solution two steps early.
+    assert all("x = 3" not in t for t in body["steps"]), body
+
+
+def test_step_titles_hold_no_raw_math():
+    import json
+
+    from app import float_plan
+    from app.db import TutorSession
+    from app.main import _float_step_map
+
+    for problem in ("2cos^2 x - 3cos x + 1 = 0 in [0, 2*pi)",
+                    "limit as x->2 of (x^2-4)/(x-2)", "x^2 - 5x + 6 = 0",
+                    "d/dx of x^3 + 2x", "0.5x + 2 = 4"):
+        plan, _ = float_plan.build_plan(problem, allow_llm=False)
+        for index in range(len(plan)):
+            sess = TutorSession(
+                problem_text=problem, total_steps=len(plan),
+                current_step_index=index,
+                solution_plan_json=json.dumps(plan))
+            titles = _float_step_map(sess)
+            assert len(titles) == len(plan), (problem, titles)
+            for title in titles:
+                assert title, (problem, titles)
+                for junk in ("=", "$", "\\", "[", "*", "^", "{"):
+                    assert junk not in title, (problem, title)
+
+
+# 17. A correct factored step advances the guided session (it used to be
+# marked wrong because the plan keeps the trailing "= 0").
+def test_factored_step_advances_the_session():
+    first = _msg("x^2 - 7x + 10 = 0").json()
+    assert first["stepIndex"] == 0, first
+    second = _msg("(x-5)(x-2) = 0").json()
+    assert second["stepIndex"] == 1, second
+    assert second["steps"][0] == "Find two numbers that multiply", second

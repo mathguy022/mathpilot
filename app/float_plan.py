@@ -131,10 +131,10 @@ def build_linear_plan(problem_text: str) -> list[dict] | None:
         coeff_side = coeff
     if abs(abs(coeff_side) - 1.0) > 1e-9 and abs(coeff_side) > 1e-9:
         try:
-            # Symbolic display: pi/4, never 0.785... or a float ratio.
+            # Symbolic display: pi/4 and 1/2, never 0.785... or 0.500000000000000.
             side_sym = sp.expand(work_lhs if lhs_has_x else work_rhs)
             coef_sym = sp.simplify(side_sym.coeff(x))
-            disp = str(coef_sym) if coef_sym != 0 else s(coeff_side)
+            disp = s(coef_sym) if coef_sym != 0 else s(coeff_side)
         except Exception:
             disp = s(coeff_side)
         steps.append({

@@ -112,7 +112,8 @@
     var steps = "";
     (recap.steps || []).forEach(function (s) {
       steps += "<li><b>Step " + s.n + ":</b> " + esc(s.action) +
-        "<br><span>$" + esc(s.result) + "$</span><br><small>" + esc(s.why) + "</small></li>";
+        "<br><span>You wrote: $" + esc(s.own || s.result) + "$</span><br><small>" +
+        esc(s.why) + "</small></li>";
     });
     div.innerHTML = '<span class="who" aria-hidden="true">&#129302;</span>' +
       '<div class="float-tutor-recap"><div class="float-tutor-recap-head">' + esc(recap.title) + "</div>" +
@@ -123,7 +124,7 @@
       (recap.note ? "<p>" + esc(recap.note) + "</p>" : "") +
       '<div class="float-tutor-recap-actions">' +
       '<button type="button" data-act="similar">Try a similar problem</button>' +
-      '<button type="button" data-act="new">New problem</button>' +
+      '<button type="button" data-act="new">Next question</button>' +
       '<button type="button" data-act="copy">Copy solution</button>' +
       "</div></div></div>";
     body.appendChild(div);
@@ -196,11 +197,13 @@
     if (graded) graded.hidden = !(ctx.type === "assignment" && ctx.mode === "graded");
     hasActive = !!(data.totalSteps && !data.sessionDone);
     setChips();
+    armIdle();
   }
 
   async function send(text) {
     text = (text || "").trim();
     if (!text || busy) return;
+    clearTimeout(idleTimer);
     lastText = text;
     hideRetry();
     hideConfirm();
@@ -234,8 +237,15 @@
         else addMsg("tutor", esc(j.reply || ""));
       } else if (rtype === "hint") {
         var hm = /Hint\s+(\d+)\s*[—\-–:]\s*(.*)/i.exec(j.reply || "");
-        if (hm) addMsg("tutor", "&#128161; <strong>Hint " + hm[1] + "</strong><br>" + esc(hm[2]), "float-tutor-hintcard");
+        // The ladder has four rungs; the student sees three hints and then a
+        // split-into-smaller-steps card, which is what "of 3" promises.
+        var label = !hm ? "Hint" : (Number(hm[1]) >= 4
+          ? "Smaller steps" : "Hint " + hm[1] + " of 3");
+        if (hm) addMsg("tutor", "&#128161; <strong>" + label + "</strong><br>" +
+          esc(hm[2]), "float-tutor-hintcard");
         else addMsg("tutor", "&#128161; " + esc(j.reply || ""), "float-tutor-hintcard");
+      } else if (rtype === "support") {
+        addMsg("tutor", esc(j.reply || ""), "bubble float-tutor-support");
       } else if (rtype === "success") {
         addMsg("tutor", "&#10003; " + esc(j.reply || ""), "bubble float-tutor-success");
       } else if (rtype === "recap") {
@@ -266,6 +276,35 @@
     var b = $("float-tutor-retry");
     if (b) b.hidden = false;
   }
+
+  // Idle nudge: after ~90s of silence on an open step, the tutor offers one
+  // gentle prompt. The server refuses a second nudge for the same step.
+  var IDLE_MS = 90000;
+  var idleTimer = null;
+
+  async function nudge() {
+    idleTimer = null;
+    if (busy || !hasActive) return;
+    try {
+      var r = await fetch("/api/tutor/nudge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageContext: pageContext() })
+      });
+      if (!r.ok) return;
+      var j = await r.json();
+      if (!j || !j.reply) return;
+      addMsg("tutor", esc(j.reply), "bubble float-tutor-support");
+      markUnread();
+      updateAfter(j);
+    } catch (e) { /* silence is acceptable; never spam */ }
+  }
+
+  function armIdle() {
+    clearTimeout(idleTimer);
+    if (!hasActive) return;
+    idleTimer = setTimeout(nudge, IDLE_MS);
+  }
   function hideRetry() {
     var b = $("float-tutor-retry");
     if (b) b.hidden = true;
@@ -279,6 +318,7 @@
     c.textContent = n >= 400 ? n + "/500" : "";
     autoGrow(ta);
     updatePreview(ta.value);
+    armIdle();
   }
 
   function autoGrow(ta) {

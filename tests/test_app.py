@@ -157,6 +157,82 @@ def test_assignments_tab_lists_assigned_packages():
     assert la.json()["link_id"] in r4.text
 
 
+def test_student_assignment_hides_solution():
+    # The student assignment page must show only the prompt + answer field.
+    # Step descriptions spell out the worked method and expected answers are
+    # the solution — neither may reach the student's browser before they answer.
+    marker_desc = "Subtract 1 from both sides to isolate"
+    marker_ans = "x=42"
+    a_item = {
+        "item_id": "q1", "prompt_latex": "Solve $x+1=43$.",
+        "steps": [{"step_id": "s1", "description": marker_desc,
+                   "expected_input_latex": marker_ans,
+                   "accepted_equivalents": [], "hints": [],
+                   "objective_tags": []}],
+        "hints": [], "objective_tags": [], "difficulty": 1,
+        "verification": "needs-review",
+    }
+    s = client.post("/api/assignments/save", json={
+        "topic": "Algebra", "title": "Leak test",
+        "items": [a_item], "settings": {}})
+    aid = s.json()["id"]
+    client.post(f"/api/assignments/{aid}/approve", json={})
+    a = client.post("/api/assign", json={
+        "assignment_id": aid, "course": "Calculus 1", "due": "2026-12-01"})
+    link = a.json()["link_id"]
+    page = client.get(f"/myassignments/{link}")
+    assert page.status_code == 200
+    assert "Solve" in page.text            # the prompt is shown
+    assert marker_desc not in page.text    # the worked step is hidden
+    assert marker_ans not in page.text     # the answer is hidden
+
+
+def _publish_simple_assignment():
+    a_item = {
+        "item_id": "q1", "prompt_latex": "Solve $x+1=2$.",
+        "steps": [{"step_id": "s1", "description": "Subtract 1.",
+                   "expected_input_latex": "x=1", "accepted_equivalents": [],
+                   "hints": [], "objective_tags": []}],
+        "hints": [], "objective_tags": [], "difficulty": 1,
+        "verification": "verified",
+    }
+    aid = client.post("/api/assignments/save", json={
+        "topic": "Algebra", "title": "Check test", "items": [a_item],
+        "solutions": {"q1": {"final_answer_latex": "x=1",
+                             "solution_steps": ["x=1"], "explanation": ""}},
+        "settings": {}}).json()["id"]
+    client.post(f"/api/assignments/{aid}/approve", json={})
+    return client.post("/api/assign", json={
+        "assignment_id": aid, "course": "Calculus 1",
+        "due": "2026-12-01"}).json()["link_id"]
+
+
+def test_assignment_check_correct_and_locks():
+    link = _publish_simple_assignment()
+    r = client.post("/api/assignments/check", json={
+        "link_id": link, "item_id": "q1", "answer": "x=1"}).json()
+    assert r["correct"] is True and r["locked"] is True
+    # Once solved, further checks never re-open or reveal the answer.
+    r2 = client.post("/api/assignments/check", json={
+        "link_id": link, "item_id": "q1", "answer": "x=999"}).json()
+    assert r2["correct"] is True and "x=1" not in r2["feedback"]
+
+
+def test_assignment_check_three_try_lockout():
+    link = _publish_simple_assignment()
+    for _ in range(3):
+        r = client.post("/api/assignments/check", json={
+            "link_id": link, "item_id": "q1", "answer": "x=7"}).json()
+        assert r["correct"] is False
+    assert r["locked"] is True and r["tries_left"] == 0
+    # Feedback must never leak the expected answer.
+    assert "x=1" not in r["feedback"]
+    # A correct answer after lockout is not re-graded (stays locked).
+    r3 = client.post("/api/assignments/check", json={
+        "link_id": link, "item_id": "q1", "answer": "x=1"}).json()
+    assert r3["locked"] is True and r3["correct"] is False
+
+
 def test_no_key_in_client_bundle(cone_activity):
     r = client.get(f"/activity/{cone_activity}")
     assert "NEBIUS_API_KEY" not in r.text or "Add" in r.text

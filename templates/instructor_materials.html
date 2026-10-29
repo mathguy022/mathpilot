@@ -2,52 +2,6 @@
 {% block title %}Shared Materials{% endblock %}
 {% block content %}
 <h1 class="page-title">Shared Materials</h1>
-<p class="page-subtitle">Upload a source (PDF or Word) and share it with your students. PDFs preview in-page; Word files download.</p>
-
-<div class="grid g2">
-  <div class="card">
-    <h3>Upload a source</h3>
-    <form method="post" action="/instructor/materials/upload" enctype="multipart/form-data">
-      <label>File * <small class="muted">(PDF, DOC or DOCX · max 15 MB)</small></label>
-      <input type="file" name="file" accept=".pdf,.doc,.docx" required>
-      <label style="margin-top:10px">Title</label>
-      <input name="title" placeholder="Defaults to the file name">
-      <label style="margin-top:10px">Course</label>
-      <select name="course">
-        <option value="">All courses</option>
-        {% for o in course_options %}<option value="{{ o.label }}">{{ o.label }}</option>{% endfor %}
-      </select>
-      <div class="row" style="margin-top:12px">
-        <button class="btn" type="submit">⬆ Upload</button>
-      </div>
-      <p class="muted" style="font-size:12.5px;margin-top:8px">New uploads start <b>private</b>. Use Share to make one visible to students.</p>
-    </form>
-  </div>
-
-  <div class="card">
-    <h3>Your uploads <small class="muted">({{ files|length }})</small></h3>
-    {% if not files %}<p class="muted">Nothing uploaded yet.</p>{% endif %}
-    {% for f in files %}
-    <div style="padding:10px 0; border-top:1px solid #eef2f7;">
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <b>{{ f.title }}</b>
-        <span class="badge {% if f.shared %}correct{% else %}muted{% endif %}">{% if f.shared %}Shared{% else %}Private{% endif %}</span>
-        <small class="muted">{{ f.original_name }} · {{ f.content_type.split('/')[-1] }} ·
-          {% if f.size >= 1048576 %}{{ (f.size/1048576)|round(1) }} MB{% else %}{{ (f.size/1024)|round(0) }} KB{% endif %}
-          {%- if f.course %} · {{ f.course }}{% endif %}</small>
-      </div>
-      <div class="row" style="margin-top:8px; gap:6px;">
-        <a class="btn small ghost" href="/shared/file/{{ f.id }}" target="_blank" rel="noopener">Preview / Download</a>
-        <form method="post" action="/instructor/materials/{{ f.id }}/share" style="display:inline">
-          <button class="btn small {% if f.shared %}ghost{% endif %}" type="submit">{% if f.shared %}Unshare{% else %}Share{% endif %}</button>
-        </form>
-        <form method="post" action="/instructor/materials/{{ f.id }}/delete" style="display:inline"
-              onsubmit="return confirm('Delete this file for everyone?')">
-          <button class="btn small ghost" type="submit">Delete</button>
-        </form>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-</div>
+<p class="page-subtitle">Manage the sources you share with students. The same panel also appears in the Builder dashboard.</p>
+{% include "_shared_files_card.html" %}
 {% endblock %}

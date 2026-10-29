@@ -38,6 +38,14 @@ _LATEX_CMDS = {
     r"\pm": "+-", r"\left": "", r"\right": "", r"\,": " ",
     r"\;": " ", r"\:": " ", r"\ ": " ", r"\!": "",
     r"\quad": " ", r"\qquad": " ",
+    # Trig / inverse-trig function names: convert to SymPy-callable tokens
+    # BEFORE the unknown-command strip, otherwise \sin(...) is deleted and
+    # the step collapses to a fragment that fails to parse.
+    r"\arcsin": "asin", r"\arccos": "acos", r"\arctan": "atan",
+    r"\sin": "sin", r"\cos": "cos", r"\tan": "tan",
+    r"\sec": "sec", r"\csc": "csc", r"\cot": "cot",
+    r"\theta": "theta", r"\phi": "phi", r"\alpha": "alpha",
+    r"\beta": "beta", r"\gamma": "gamma", r"\lambda": "lambda_",
 }
 
 
@@ -66,6 +74,10 @@ def normalize_math(text: str) -> str:
         t = new
     for cmd, rep in _LATEX_CMDS.items():
         t = t.replace(cmd, rep)
+    # Degrees: 30^\circ -> 30*(pi/180) so SymPy evaluates the angle; any
+    # stray \circ (no preceding ^) is dropped rather than left as `^`.
+    t = re.sub(r"\^\s*\\circ", "*(pi/180)", t)
+    t = t.replace(r"\circ", "")
     # \text{...} / \mathrm{...} wrappers first: unwrap before braces->parens
     t = re.sub(r"\\text\{([^{}]*)\}", r" \1 ", t)
     t = re.sub(r"\\mathrm\{([^{}]*)\}", r"\1", t)
@@ -79,13 +91,17 @@ def normalize_math(text: str) -> str:
     t = re.sub(r"\bd\s+([a-zA-Z])", r"d\1", t)
     # strip any remaining unknown \command (safe: drop, don't execute)
     t = re.sub(r"\\[a-zA-Z]+", "", t)
-    # trig powers: cos^2 x -> cos(x)**2 ; cos^2(x) -> cos(x)**2.
-    # Handles sin/cos/tan/sec/csc/cot (+ a-prefixed inverses). The direct
-    # ** form avoids implicit-multiplication splitting 'cos (x)' later.
+    # trig powers: cos^2 x -> cos(x)**2 ; cos^2(x) -> cos(x)**2 ;
+    # sin^2(30*(pi/180)) -> sin(30*(pi/180))**2.
+    # Handles sin/cos/tan/sec/csc/cot (+ a-prefixed inverses). The argument is
+    # either a balanced single-level parenthesised expression or a bare name,
+    # so a function of a NUMBER (sin^2(45deg)) parses too. The direct ** form
+    # avoids implicit-multiplication splitting 'cos (x)' later.
     t = re.sub(
-        r"(?<![a-zA-Z])(a?sin|a?cos|a?tan|sec|csc|cot)\s*\^\s*(\d+)"
-        r"(?:\s*\(\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\)|\s+([a-zA-Z][a-zA-Z0-9_]*))",
-        lambda m: f"{m.group(1)}({m.group(3) or m.group(4)})**{m.group(2)}",
+        r"(?<![a-zA-Z])(a?sin|a?cos|a?tan|sec|csc|cot)\s*\^\s*(\d+)\s*"
+        r"(?:\(((?:[^()]|\([^()]*\))*)\)|([a-zA-Z][a-zA-Z0-9_]*))",
+        lambda m: f"{m.group(1)}({(m.group(3) or m.group(4)).strip()})"
+                  f"**{m.group(2)}",
         t,
     )
     # bare trig/ln/log of a variable: cos x -> cos(x); ln x -> ln(x).
@@ -278,21 +294,26 @@ def check_solution_set(student: str, expected: str,
 def check_factored(student: str, expected: str) -> Verdict:
     """Factored form: equivalent AND actually factored (not just expanded)."""
     # A trailing "= 0" on the expected answer is a display convention,
-    # not part of the factored form: compare against the LHS.
+    # not part of the factored form: compare against the LHS. Students are
+    # told to keep the equation, so strip it from their side for the same
+    # reason — "(x-5)(x-2) = 0" is the factored form, not a mismatch.
     exp = expected.strip()
     if exp.endswith("= 0") or exp.endswith("=0"):
         exp = exp.rsplit("=", 1)[0]
-    base = check_equivalent(student, exp)
+    stu = (student or "").strip()
+    if stu.endswith("= 0") or stu.endswith("=0"):
+        stu = stu.rsplit("=", 1)[0].strip()
+    base = check_equivalent(stu, exp)
     if base.status != "correct":
         if not (student or "").strip():
             return Verdict("incomplete", "Empty response — please enter a step.")
         return base
     # Factored means: contains a parenthesized product or power of one,
     # and is not a bare expanded polynomial.
-    t = normalize_math(student if "=" not in student
-                       else student.split("=", 1)[0]
-                       if student.split("=", 1)[0].strip() not in ("", "0")
-                       else student.split("=", 1)[1])
+    t = normalize_math(stu if "=" not in stu
+                       else stu.split("=", 1)[0]
+                       if stu.split("=", 1)[0].strip() not in ("", "0")
+                       else stu.split("=", 1)[1])
     has_product = bool(re.search(r"\)\s*[\*]?\s*\(|\)\s*\*\*?\s*\(?", t))
     has_paren = "(" in t
     if has_paren and (has_product or "**" in t or "^" in t):
@@ -408,6 +429,23 @@ def display_math(text: str) -> str:
     return t.strip()
 
 
+# A LaTeX command plus up to two balanced brace groups it owns.
+_LATEX_RUN = re.compile(
+    r"\\[a-zA-Z]+(?:\s*\{(?:[^{}]|\{[^{}]*\})*\}){0,2}")
+
+
+def wrap_bare_latex(text: str) -> str:
+    """Delimit LaTeX that arrives outside $...$ so it renders instead of reading
+    as code (tutor replies sometimes say `\\frac{a}{b}` in plain prose)."""
+    def _repl(m):
+        span = m.group(0)
+        if len(re.sub(r"\s", "", span)) <= 1:
+            return span
+        return "$" + span + "$"
+
+    return _LATEX_RUN.sub(_repl, text)
+
+
 def check_numeric(student: str, expected: float, tol: float = 1e-6) -> Verdict:
     try:
         s = _safe_parse(student)
@@ -490,6 +528,26 @@ def _strip_latex_environments(text: str) -> str:
     return t.strip()
 
 
+def _math_only(text: str) -> str:
+    """Strip English prose, keeping the math islands as comma-separated parts.
+
+    Word-problem prompts wrap every expression in $...$ ("Find the exact
+    value of $\\sin(\\pi/3)$ ..."). SymPy solvers choke on the surrounding
+    sentences, so when $...$ spans exist we reduce the prompt to just those
+    spans joined by commas; each span then reads as its own equation/segment.
+    Prompts with no $ delimiters are returned unchanged (already math-only).
+    """
+    t = (text or "").strip()
+    if not t:
+        return t
+    t = _strip_latex_environments(t).replace("$$", "$")
+    spans = [s.strip() for s in re.findall(r"\$(.+?)\$", t, flags=re.DOTALL)
+             if s.strip()]
+    if not spans:
+        return t
+    return ", ".join(spans)
+
+
 def detect_mode(question) -> str:
     """Explicit routing from step objective_tags. Falls back to 'equiv'.
 
@@ -528,7 +586,7 @@ def _eq_objects(prompt: str) -> tuple[list, list]:
     """
     import string as _string
 
-    parts = _split_top_level(_strip_latex_environments(prompt))
+    parts = _split_top_level(_math_only(prompt))
     eqs, syms = [], []
     # Merge newline-split rows: '...equations:\n2x+y=7,\nx-y=2' splits on
     # commas AND newlines must not orphan the prose lead-in.
@@ -549,12 +607,25 @@ def _eq_objects(prompt: str) -> tuple[list, list]:
                 r"(?=[a-zA-Z0-9\\$(\[][^=]*=)", part)
             if lead and "=" not in lead.group(1):
                 part = part[len(lead.group(1)):].strip()
+        # Domain/inequality constraints ('0 <= theta < 2pi', '\theta \le \pi')
+        # and bracketed intervals ('[0, 2\pi]') are ranges, not equations to
+        # solve. Drop any segment that is a constraint with no real '=' so a
+        # trig solve problem yields its solution set instead of a parse error.
+        is_ineq = re.search(r"[<>≤≥]|\\le(?![a-zA-Z])|\\ge(?![a-zA-Z])|\\lt|\\gt", part)
+        has_true_eq = re.search(r"(?<![<>!=])=(?!=)", part)
+        if (is_ineq or re.fullmatch(r"[\[\(].*[\]\)]", part)) and not has_true_eq:
+            continue
         if "=" not in part and not re.search(r"[0-9\\^+\-*/()]", part):
             continue  # pure prose segment, not an equation
         if "=" not in part:
             # Bare expression: treat as expr = 0.
             expr = _parse_single(part)
             syms.extend(list(expr.free_symbols))
+            # A lone variable mention (e.g. 'for $\theta$ in [0,2\pi]') names a
+            # symbol but is not an equation; do not fabricate 'theta = 0', which
+            # would make the solver see an inconsistent system.
+            if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", normalize_math(part)):
+                continue
         else:
             lhs_raw, rhs_raw = part.split("=", 1)
             lhs = _parse_single(lhs_raw) if lhs_raw.strip() else sp.Integer(0)
@@ -793,7 +864,13 @@ def _numeric_confirm(a, b, points=PROBE_POINTS, required: int = 3) -> bool:
 def _verify_simplify(question) -> Verdict:
     """Equivalence check: symbolic first, fixed-point numeric confirmation."""
     try:
-        s = _parse_single(question.prompt_latex)
+        # Reduce word-problem prose to its math islands, then evaluate the
+        # target expression (prefer a bare '='-free segment) against the
+        # final answer. "$\sin(\pi/3)$" -> sin(pi/3) == sqrt(3)/2.
+        core = _math_only(question.prompt_latex)
+        segs = [x.strip() for x in _split_top_level(core) if x.strip()]
+        s_src = next((x for x in segs if "=" not in x), core)
+        s = _parse_single(s_src)
         e = _parse_single(question.final_answer_latex)
     except Exception as exc:
         return Verdict("unverifiable", f"Could not parse input safely: {exc}")
@@ -824,7 +901,18 @@ def verify_canonical(question) -> Verdict:
     if mode in ("deriv", "integ", "limit"):
         return _verify_calculus(question, mode)
     if mode == "simplify":
-        return _verify_simplify(question)
+        sv = _verify_simplify(question)
+        if sv.status in ("correct", "incorrect"):
+            return sv
+        # Mis-tagged solve/equation word problem (trig "power function" tags
+        # route here): try the canonical equation solver before giving up.
+        try:
+            eq = _verify_equation(question, is_system=False)
+            if eq.status in ("correct", "incorrect"):
+                return eq
+        except Exception:
+            pass
+        return sv
     # Default for unknown/untagged topics: try the equation solver first
     # (handles bare 'x+1=2' prompts with no tags), then fall back to the
     # simplify check (trig identities, logs, expressions). Never crashes.

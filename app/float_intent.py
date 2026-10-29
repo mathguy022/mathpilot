@@ -10,15 +10,43 @@ _NEW_LEAD = re.compile(
     r"^\s*(solve|find|simplify|evaluate|factor|differentiate|integrate|prove)\b",
     re.IGNORECASE,
 )
-_HELP = ("stuck", "hint", "hint?", "help", "i don't know", "idk", "lost")
+_HELP = ("stuck", "hint", "hint?", "help", "lost")
 # Any prose that names a hint is asking for help, even when the wording is
 # not in the exact-phrase list ("another hint please", "hint 2?").
 _HINT_WORD = re.compile(r"\bhints?\b")
 _HELP_PHRASES = (
     "i'm stuck", "im stuck", "i am stuck", "i'm lost", "im lost",
     "i am lost", "no idea", "i don't get", "i dont get", "don't get it",
-    "confused", "i give up", "this is hard", "too hard", "help me",
-    "i don't know how", "i dont know how", "can't start", "cannot start",
+    "confused", "i don't know how", "i dont know how", "can't start",
+    "cannot start", "i need help", "need a hand", "i dont understand",
+    "i don't understand", "im confused", "i am confused", "help me please",
+)
+# "Where do I start?" is not a hint request: the student needs Step 1, not a
+# rung. Apostrophe-free spellings and the common "I do know" mistype count too.
+_START_PHRASES = (
+    "what should i do", "what should i do next", "what should i do here",
+    "what do i do", "what do i do now", "what do i do here", "what to do",
+    "what to do here", "what to do next", "what now", "whats next",
+    "what's next", "what is next", "where do i start", "where should i start",
+    "where do i begin", "how do i start", "how do i begin", "how do i start it",
+    "i do know", "i dont know", "i don know", "i do not know", "idk",
+    "no clue", "i have nothing", "im blank", "i am blank", "mind is blank",
+    "start over", "begin again", "not sure what to do", "unsure what to do",
+    "tell me the first step", "whats the first step", "what is the first step",
+    "first step", "help me", "help me out", "show me how to start",
+)
+# Frustration outranks a hint request: the student gets acknowledgement and a
+# smaller step, not another rung.
+_FRUSTRATED = (
+    "i give up", "im giving up", "i am giving up", "gave up", "i quit",
+    "this is stupid", "this is dumb", "stupid math", "i hate this",
+    "i hate math", "hate this", "i cant do this", "i can not do this",
+    "this is hopeless", "hopeless", "pointless", "waste of time",
+    "too hard for me", "im too dumb", "i am too dumb", "i m not smart",
+    "why is this so hard", "i m done", "im done with this", "never mind",
+    "this is too hard", "this is hard", "too hard", "too difficult",
+    "cant take this", "i'm frustrated",
+    "im frustrated", "so frustrated", "annoying", "i m angry", "so angry",
 )
 _ANSWER_REQ = (
     "give me the answer", "what is the answer", "what's the answer",
@@ -73,11 +101,22 @@ _MATH_TOPIC = (
     "decimal", "proportion", "slope", "intercept", "vertex", "domain",
     "range", "asymptote",
 )
+# Operation verbs are course vocabulary too: "why do we subtract?" is a
+# concept question, not a request for Step 1. Word-bounded, because a
+# substring read of "add" would match "address".
+_MATH_VERB = re.compile(
+    r"\b(subtract|add|divide|multipl|cancel|combin|expand|square|cube|"
+    r"root|substitut|isolat|simplifi|solv|evalu|differenti|integrat|"
+    r"move|shift|swap|swap sides|bring|get rid|cancel out|"
+    r"sine|cosine|tangent|secant|cosecant|cotangent|log|antiderivative|"
+    r"completing|discriminant|facto)\w*\b",
+    re.IGNORECASE,
+)
 
 
 def classify(message: str, has_session: bool) -> str:
     """Return NEW_PROBLEM | STEP_ANSWER | CONCEPT_QUESTION | HELP_REQUEST |
-    ANSWER_REQUEST | OFF_TOPIC | CHAT.
+    START_STEP | FRUSTRATED | ANSWER_REQUEST | OFF_TOPIC | CHAT.
 
     Order matters: the off-topic and question reads come before the
     math-shape test, otherwise prose like "what is a derivative" gets
@@ -87,14 +126,21 @@ def classify(message: str, has_session: bool) -> str:
     if not t:
         return "HELP_REQUEST"
     low = t.lower()
+    # Students type help phrases with and without apostrophes ("i dont know").
+    bare = low.replace("'", "").replace("\u2019", "")
     if any(p in low for p in _ANSWER_REQ):
         return "ANSWER_REQUEST"
+    if not looks_like_answer(t) and any(p in bare for p in _FRUSTRATED):
+        return "FRUSTRATED"
     if low in _HELP or low.strip("!?.") in ("stuck", "hint", "help"):
         return "HELP_REQUEST"
     if (not looks_like_answer(t)
-            and (any(p in low for p in _HELP_PHRASES)
+            and (any(p in bare for p in _HELP_PHRASES)
                  or _HINT_WORD.search(low))):
         return "HELP_REQUEST"
+    if (not looks_like_answer(t)
+            and any(p in bare for p in _START_PHRASES)):
+        return "START_STEP"
     if any(w in low for w in _NON_MATH) and not looks_like_answer(t):
         return "OFF_TOPIC"
     if _is_greeting(low):
@@ -113,6 +159,12 @@ def classify(message: str, has_session: bool) -> str:
         return "STEP_ANSWER"
     if not has_session and _looks_like_math(t):
         return "NEW_PROBLEM"
+    # A question that carries no math at all is asking for a direction, so it
+    # goes to the step, not to the grader: "how do I even approach this?" must
+    # never read back as "I couldn't match that to this item".
+    if (not _is_gibberish(low) and not _looks_like_math(t)
+            and (low.endswith("?") or _is_question_form(low))):
+        return "START_STEP" if has_session else "CHAT"
     # Unrecognized. With a problem open it is most likely a mistyped or
     # unreadable answer, so let the CAS grade it (unclear -> format help)
     # rather than chat past it. With nothing open, it is conversation.
@@ -120,7 +172,21 @@ def classify(message: str, has_session: bool) -> str:
 
 
 def _is_math_topic(low: str) -> bool:
-    return bool(_MATH_WORD.search(low)) or any(w in low for w in _MATH_TOPIC)
+    return (bool(_MATH_WORD.search(low)) or bool(_MATH_VERB.search(low))
+            or any(w in low for w in _MATH_TOPIC))
+
+
+def _is_gibberish(low: str) -> bool:
+    """True for keyboard noise ("asdfgh jkl"), which is an unreadable answer.
+
+    Real help phrases are made of vowels-and-consonants words; a bare run of
+    three consonants is not English and not math, so it must still reach the
+    checker and get format help instead of being read as "I'm lost".
+    """
+    for token in re.findall(r"[a-z]{3,}", low or ""):
+        if not re.search(r"[aeiouy]", token):
+            return True
+    return False
 
 
 def _is_question_form(low: str) -> bool:

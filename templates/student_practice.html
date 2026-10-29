@@ -5,7 +5,7 @@
 <h1 class="page-title">Practice with AI Tutor</h1>
 <p class="page-subtitle">Build confidence with guided, ungraded practice.</p>
 
-{% if not selected %}
+{% if not options %}
 <div class="card empty-state" style="margin-top:16px">
   <p style="font-size:18px;font-weight:700">No practice material yet</p>
   <p class="muted">Your instructor hasn't assigned any lessons. Practice unlocks once a lesson is assigned.</p>
@@ -16,103 +16,134 @@
   <div class="pkg-card">
     <label class="pkg-label" for="pkg-select">Practice package</label>
     <select id="pkg-select" class="pkg-select" onchange="loadItems()" aria-label="Practice package">
-      {% for o in options %}<option value="{{ o.link_id }}" {% if selected and o.link_id == selected.link_id %}selected{% endif %}>{{ o.title }}{% if o.topic %} — {{ o.topic }}{% endif %}</option>{% endfor %}
+      {% for o in options %}<option value="{{ o.ref }}" {% if selected and o.ref == selected.ref %}selected{% endif %}>{{ o.title }}{% if o.topic %} — {{ o.topic }}{% endif %}</option>{% endfor %}
     </select>
   </div>
   <span class="pill-badge" id="pkg-topic"></span>
+  <span class="muted" id="pkg-count"></span>
 </div>
 
-<div class="practice-card">
-  <div class="question-top-row">
-    <span class="question-number" id="q-counter">QUESTION 0 OF 0</span>
-    <span class="approval-badge">Ungraded practice</span>
-  </div>
-  <div class="progress-row">
-    <div class="progress-track"><div class="progress-fill" id="q-progress"></div></div>
-    <span class="progress-pct" id="q-pct">0%</span>
-  </div>
-
-  <div class="question-body">
-    <div class="question-prompt" id="q-context">Guided practice</div>
-    <div class="problem-math-hero" id="q-prompt">Loading…</div>
-    <p class="work-hint">Show your work one step at a time.</p>
-  </div>
-
-  <div class="answer-box">
-    <textarea id="plain-input" class="answer-plain" rows="4" maxlength="500"
-      placeholder="Enter your next step or answer..." aria-label="Your next step or answer"></textarea>
-    <math-field id="mf" hidden placeholder="Enter your next step or answer..."></math-field>
-    <button type="button" class="input-toggle" id="input-toggle" onclick="toggleInput()" aria-pressed="false">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M7 8h4M7 12h2M13 12h4M7 16h4"></path></svg>
-      <span id="input-toggle-label">Math Input</span>
-    </button>
-  </div>
-
-  <div class="math-quick-bar">
-    <button type="button" class="symbol-btn" onclick="insertMath('\\frac{}{}')" title="Fraction">a/b</button>
-    <button type="button" class="symbol-btn" onclick="insertMath('^{}')" title="Exponent">xⁿ</button>
-    <button type="button" class="symbol-btn" onclick="insertMath('\\sqrt{}')" title="Square root">√</button>
-    <button type="button" class="symbol-btn" onclick="insertMath('()')" title="Parentheses">( )</button>
-    <button type="button" class="symbol-btn" onclick="insertMath('\\pi')" title="Pi">π</button>
-  </div>
-
-  <div class="practice-actions">
-    <button type="button" class="btn-primary" id="check-btn" onclick="checkAttempt()">Check Step &nbsp;→</button>
-    <button type="button" class="btn-outline" id="hint-btn" onclick="askHint()">💡&nbsp; Get a Hint</button>
-    <button type="button" class="text-btn" onclick="skipQ()">Skip Question</button>
-  </div>
-
-  <div class="step-feedback" id="practice-feedback-panel" hidden>
-    <div class="step-feedback-head" id="practice-feedback-head">💡 Step feedback</div>
-    <div class="step-feedback-body" id="practice-feedback"></div>
-  </div>
-
-  <div class="nav-row">
-    <button type="button" class="btn-ghost" id="prev-btn" onclick="moveQ(-1)">← &nbsp;Previous</button>
-    <button type="button" class="btn-primary" id="next-btn" onclick="moveQ(1)">Next question &nbsp;→</button>
-  </div>
-</div>
-
-<p class="ungraded-note">
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>
-  <span><strong>Practice is ungraded.</strong> Your progress is saved automatically.</span>
-</p>
-
-<div class="support-card practice-tutor-card">
-  <div class="support-card-head">
-    <div class="support-card-title">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple-primary)" stroke-width="2.5"><polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9 12 2"></polygon></svg>
-      AI Math Tutor
+<div class="practice-grid">
+  <!-- WORK: the problem, the student's own steps, and the answer box. -->
+  <section class="practice-card" aria-label="Practice item">
+    <div class="question-top-row">
+      <span class="question-number" id="q-counter">QUESTION 0 OF 0</span>
+      <span class="q-dots" id="q-dots" role="tablist"></span>
+      <span class="approval-badge">Ungraded practice</span>
     </div>
-    <div class="support-card-pills"><span class="pill-badge">A hint, not the answer</span></div>
-  </div>
-  <div class="tutor-chat-box" id="tutor-chat" style="max-height:340px; overflow-y:auto;">
-    <div class="tutor-msg-bubble"><div class="tutor-avatar">🤖</div>
-    <div id="tutor-hello">Ask me anything about this item — type a question, your working, or just “I'm stuck”. I guide; your course math is what I cover.</div></div>
-  </div>
-  <div class="tutor-mode-row">
-    <span class="pill-badge" id="tutor-mode-label">Item help</span>
-    <button type="button" class="btn-tutor-action" id="steps-btn" onclick="startSteps()">Work it step by step</button>
-    <button type="button" class="btn-tutor-action" id="back-btn" onclick="backToItem()" hidden>Back to this item</button>
-  </div>
-  <div class="tutor-actions">
-    <button type="button" class="btn-tutor-action" onclick="explainStep()">Explain This Step</button>
-  </div>
-  <form class="tutor-input-row" id="tutor-form" autocomplete="off">
-    <input type="text" id="tutor-input" placeholder="Ask a question or type your math" maxlength="500" aria-label="Message the tutor">
-    <button type="submit" class="btn-primary" id="tutor-send">Send</button>
-  </form>
+
+    <div class="question-body">
+      <div class="question-prompt" id="q-context">Guided practice</div>
+      <div class="problem-math-hero" id="q-prompt">Loading…</div>
+    </div>
+
+    <h3 class="work-head">Your work</h3>
+    <ol class="work-list" id="work-list"></ol>
+
+    <div class="answer-box">
+      <div class="math-quick-bar" aria-label="Math shortcuts">
+        <button type="button" class="symbol-btn" onclick="insertMath('\\frac{}{}')" title="Fraction">a/b</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('^{}')" title="Exponent">xⁿ</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('\\sqrt{}')" title="Square root">√</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('()')" title="Parentheses">( )</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('\\pi')" title="Pi">π</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('\\theta')" title="Theta">θ</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('\\sin ')" title="Sine">sin</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('\\cos ')" title="Cosine">cos</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('\\tan ')" title="Tangent">tan</button>
+        <button type="button" class="symbol-btn" onclick="insertMath('^\\circ')" title="Degrees">°</button>
+      </div>
+      <textarea id="plain-input" class="answer-plain" rows="3" maxlength="500"
+        placeholder="Type your step" aria-label="Your next step or answer"></textarea>
+      <math-field id="mf" hidden aria-label="Your next step or answer"></math-field>
+      <div class="answer-foot">
+        <span class="muted" id="preview-hint">Math you type here shows up formatted when you check it.</span>
+        <button type="button" class="input-toggle" id="input-toggle" onclick="toggleInput()" aria-pressed="false">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect><path d="M7 8h4M7 12h2M13 12h4M7 16h4"></path></svg>
+          <span id="input-toggle-label">Math Input</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="practice-actions">
+      <button type="button" class="btn-primary" id="check-btn" onclick="checkAttempt()">Check step &nbsp;→</button>
+      <button type="button" class="btn-outline" id="hint-btn" onclick="askHint()">💡 Get a hint</button>
+      <button type="button" class="text-btn" onclick="skipQ()">Skip question</button>
+      <button type="button" class="btn-ghost" id="next-btn" onclick="moveQ(1)" style="margin-left:auto">Next question &nbsp;→</button>
+    </div>
+
+    <div class="step-feedback" id="practice-feedback-panel" hidden>
+      <div class="step-feedback-head" id="practice-feedback-head">💡 Step feedback</div>
+      <div class="step-feedback-body" id="practice-feedback"></div>
+    </div>
+
+    <p class="ungraded-note">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10" width="16" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>
+      <span><strong>Practice is ungraded.</strong> Your progress is saved automatically.</span>
+    </p>
+  </section>
+
+  <!-- TUTOR RAIL: guidance that stays visible while the student works. -->
+  <aside class="support-card tutor-rail" aria-label="AI Math Tutor">
+    <div class="support-card-head">
+      <div class="support-card-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--purple-primary)" stroke-width="2.5"><polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9 12 2"></polygon></svg>
+        AI Math Tutor
+      </div>
+      <div class="support-card-pills"><span class="pill-badge">A hint, not the answer</span></div>
+    </div>
+
+    <div class="rail-block" id="rail-map" hidden>
+      <p class="rail-label" id="rail-map-title">Steps</p>
+      <ol class="rail-steps" id="rail-steps"></ol>
+      <p class="muted rail-note">Next steps unlock as you finish each one.</p>
+    </div>
+
+    <div class="rail-block">
+      <p class="rail-label">Hints for this question</p>
+      <div class="hint-meter" id="hint-meter" aria-label="Hints used"></div>
+      <p class="muted rail-note">Hints get more specific each time. You will never be handed the answer.</p>
+    </div>
+
+    <div class="tutor-chat-box" id="tutor-chat"></div>
+
+    <div class="tutor-mode-row">
+      <button type="button" class="btn-tutor-action" id="steps-btn" onclick="startSteps()">Work it step by step</button>
+      <button type="button" class="btn-tutor-action" id="back-btn" onclick="backToItem()" hidden>Back to this question</button>
+    </div>
+
+    <div class="rail-block">
+      <p class="rail-label">Ask the tutor</p>
+      <div class="ask-chips">
+        <button type="button" class="chip-btn" onclick="sendChat('Where do I start?')">Where do I start?</button>
+        <button type="button" class="chip-btn" onclick="explainStep()">Explain this step</button>
+        <button type="button" class="chip-btn" onclick="sendChat('Why does this work?')">Why does this work?</button>
+      </div>
+    </div>
+
+    <form class="tutor-input-row" id="tutor-form" autocomplete="off">
+      <input type="text" id="tutor-input" placeholder="Ask a question or type your math" maxlength="500" aria-label="Message the tutor">
+      <button type="submit" class="btn-primary" id="tutor-send">Send</button>
+    </form>
+  </aside>
 </div>
 {% endif %}
 
 <script>
-let ITEMS=[], QI=0, LINK_ID="{{ selected.link_id if selected else '' }}";
+let ITEMS=[], QI=0, PROGRESS={}, HINT_BUDGET=3;
+let REF="{{ selected.ref if selected else '' }}";
 let COURSE="{{ selected.course if selected else '' }}", MODE="item", BUSY=false;
-let USE_MATH_INPUT=false;
+let USE_MATH_INPUT=false, SAVE_TIMER=null;
+// Attempts the student made in this sitting, per item: item_id -> [{text,verdict}]
+let WORK={};
 function esc(s){ return String(s==null?'':s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function plainBox(){ return document.getElementById('plain-input'); }
 function mathBox(){ return document.getElementById('mf'); }
+function cur(){ return ITEMS[QI]||null; }
+function prog(){ const it=cur(); if(!it) return {status:'started',tries:0,hints:0,draft:''};
+  if(!PROGRESS[it.item_id]) PROGRESS[it.item_id]={status:'started',tries:0,hints:0,draft:''};
+  return PROGRESS[it.item_id]; }
 function getInput(){ if(USE_MATH_INPUT){ const mf=mathBox(); try{ return String(mf&&mf.getValue('latex')||mf&&mf.value||'').trim(); }catch(e){ return String(mf&&mf.value||'').trim(); } }
   return String(plainBox().value||'').trim(); }
 function clearInput(){ const p=plainBox(); if(p) p.value=''; const mf=mathBox(); try{ mf&&mf.setValue(''); }catch(e){} }
@@ -124,7 +155,8 @@ function toggleInput(){ const next=!USE_MATH_INPUT, p=plainBox(), mf=mathBox(), 
 function insertMath(latex){ if(USE_MATH_INPUT){ const mf=mathBox(); if(!mf) return;
   try{ mf.executeCommand(['insert',latex]); }catch(e){} mf.focus(); return; }
   const p=plainBox(); if(!p) return; const s=p.selectionStart, e=p.selectionEnd;
-  const piece=latex.replace(/[{}]/g,'').replace('\\frac{}{}','( )/( )').replace('\\sqrt{}','sqrt( )').replace('^{}','^');
+  const piece=latex.replace(/[{}]/g,'').replace('\\frac{}{}','( )/( )').replace('\\sqrt{}','sqrt( )').replace('^{}','^')
+    .replace('\\theta','theta').replace('\\pi','pi').replace('^\\circ',' degrees');
   p.value=p.value.slice(0,s)+piece+p.value.slice(e); p.selectionStart=p.selectionEnd=s+piece.length;
   p.focus(); }
 function bubble(who, html, cls){ const box=document.getElementById('tutor-chat'); if(!box) return null;
@@ -136,7 +168,6 @@ function bubble(who, html, cls){ const box=document.getElementById('tutor-chat')
  if(window.renderMath) window.renderMath(d); return d; }
 function say(html, cls){ return bubble('tutor', html, cls); }
 function ask(text){ return bubble('student', esc(text)); }
-function tutorSay(html){ return say(html); }
 function typing(){ return bubble('tutor','<span class="tutor-typing"><i></i><i></i><i></i></span>'); }
 async function post(url, body, ms=60000){ const ctl=new AbortController();
  const timer=setTimeout(()=>ctl.abort(), ms);
@@ -152,104 +183,220 @@ async function post(url, body, ms=60000){ const ctl=new AbortController();
  finally{ clearTimeout(timer); } }
 function setBusy(on){ BUSY=on;
  ['tutor-input','tutor-send','steps-btn','check-btn','hint-btn','plain-input'].forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled=on; }); }
-function setMode(){ const lbl=document.getElementById('tutor-mode-label'),
-  sbtn=document.getElementById('steps-btn'), bbtn=document.getElementById('back-btn');
- if(lbl && MODE!=='steps') lbl.textContent='Item help';
- if(sbtn) sbtn.hidden = MODE==='steps'; if(bbtn) bbtn.hidden = MODE!=='steps'; }
+function setMode(){ const sbtn=document.getElementById('steps-btn'), bbtn=document.getElementById('back-btn');
+ if(sbtn) sbtn.hidden = MODE==='steps'; if(bbtn) bbtn.hidden = MODE!=='steps';
+ if(MODE==='steps') armIdle(); else clearTimeout(IDLE_TIMER);
+ renderMap(); }
+// --- feedback panel: one owner for the verdict, plain sentences only ---
 function stepFeedback(html, tone){ const panel=document.getElementById('practice-feedback-panel'),
   body=document.getElementById('practice-feedback'), head=document.getElementById('practice-feedback-head');
  if(!panel||!body) return;
  if(html==null){ panel.hidden=true; body.innerHTML=''; return; }
  panel.hidden=false; panel.className='step-feedback'+(tone?' '+tone:'');
- if(head) head.innerHTML = tone==='ok' ? '✔ Step feedback' : '💡 Step feedback';
+ if(head) head.innerHTML = tone==='ok' ? '✔ Nice work' : (tone==='bad' ? '✗ Not yet' : '💡 Step feedback');
  body.innerHTML=html;
  if(window.renderMath) window.renderMath(body); }
-function showVerdict(j){
- if(j.verdict==='correct') stepFeedback('Verified with our math checker — nice work. <button type="button" class="text-btn" onclick="moveQ(1)">Next question →</button>', 'ok');
- else if(j.verdict==='incomplete') stepFeedback('Enter your next step, or tap <b>Get a Hint</b>.');
- else if(j.verdict==='not_an_attempt') return;
- else stepFeedback(esc(j.reply || j.detail || 'Needs work — try one more step.')); }
+// --- left column: dots, work list, hint meter ---
+function renderDots(){ const box=document.getElementById('q-dots'); if(!box) return;
+ box.innerHTML=ITEMS.map((it,i)=>{ const p=PROGRESS[it.item_id]||{};
+  const state=p.status==='solved'?' solved':(p.status==='skipped'?' skipped':'');
+  return '<button type="button" role="tab" class="q-dot'+(i===QI?' current':'')+state+
+   '" onclick="gotoQ('+i+')" aria-label="Question '+(i+1)+' of '+ITEMS.length+
+   '" title="Question '+(i+1)+'">'+(i+1)+'</button>'; }).join(''); }
+function renderWork(){ const box=document.getElementById('work-list'); if(!box) return;
+ const it=cur(); if(!it){ box.innerHTML=''; return; }
+ const rows=(WORK[it.item_id]||[]); const p=prog();
+ if(p.status==='solved'){ box.innerHTML='<li class="work-row solved"><span class="work-n">✔</span><div><b>Done</b>'+
+   (rows.length?'<p class="muted">'+esc(rows[rows.length-1].text)+'</p>':'')+
+   '<p class="work-good">Verified by the math checker. Tap Next question for another one.</p></div></li>'; return; }
+ if(p.status==='skipped'){ box.innerHTML='<li class="work-row skipped"><span class="work-n">→</span><div><b>Skipped</b>'+
+   '<p class="muted">Come back any time — it stays in this set.</p></div></li>'; return; }
+ if(!rows.length){ box.innerHTML='<li class="work-row empty"><span class="work-n">1</span><div>'+
+   '<b>Start with the first move.</b><p class="muted">Type one line of working, then press Check step. '+
+   'Stuck? Ask for a hint — it gives you a direction, never the answer.</p></div></li>'; return; }
+ box.innerHTML=rows.map((r,i)=>'<li class="work-row '+esc(r.verdict)+'"><span class="work-n">'+(i+1)+'</span>'+
+   '<div><b>'+esc(r.text)+'</b><p class="'+(r.verdict==='correct'?'work-good':'work-bad')+'">'+esc(r.note)+'</p></div></li>').join(''); }
+function renderMeter(){ const box=document.getElementById('hint-meter'); if(!box) return;
+ const used=Math.min(HINT_BUDGET, prog().hints||0);
+ box.innerHTML=Array.from({length:HINT_BUDGET},(_,i)=>
+   '<span class="hint-seg'+(i<used?' used':'')+'" aria-hidden="true"></span>').join('');
+ const btn=document.getElementById('hint-btn');
+ if(!btn) return;
+ btn.innerHTML = used>=HINT_BUDGET ? '💡 No hints left' : '💡 Get a hint · '+(used+1)+' of '+HINT_BUDGET;
+ btn.disabled = used>=HINT_BUDGET; }
+// --- right column: the step map only exists during a guided session ---
+function renderMap(){ const block=document.getElementById('rail-map'); if(!block) return;
+ if(MODE!=='steps'||!SESSION.steps.length){ block.hidden=true; return; }
+ block.hidden=false;
+ const title=document.getElementById('rail-map-title');
+ title.textContent='Step '+Math.min(SESSION.index+1, SESSION.total)+' of '+SESSION.total;
+ document.getElementById('rail-steps').innerHTML=SESSION.steps.map((s,i)=>{
+   const done=i<SESSION.index, now=i===SESSION.index;
+   return '<li class="rail-step'+(done?' done':'')+(now?' now':'')+'">'+
+     '<span class="rail-step-n">'+(done?'✓':(i+1))+'</span>'+
+     '<span class="rail-step-t">'+(esc(s)||'Step '+(i+1))+'</span></li>'; }).join(''); }
+function renderNav(){ const it=cur();
+ document.getElementById('q-counter').textContent = ITEMS.length
+   ? 'QUESTION '+(QI+1)+' OF '+ITEMS.length : 'QUESTION 0 OF 0';
+ document.getElementById('next-btn').disabled = !ITEMS.length || QI>=ITEMS.length-1;
+ document.getElementById('check-btn').disabled = !it || prog().status==='solved'; }
+// --- autosave: the student's place survives a reload ---
+function queueSave(){ const it=cur(); if(!it) return;
+ clearTimeout(SAVE_TIMER);
+ SAVE_TIMER=setTimeout(()=>{ post('/api/practice/progress',{ref:REF,item_id:it.item_id,draft:getInput()})
+   .catch(()=>{}); }, 800); }
+async function saveNow(status){ const it=cur(); if(!it) return;
+ try{ await post('/api/practice/progress',{ref:REF,item_id:it.item_id,draft:getInput(),status:status||prog().status}); }
+ catch(e){} }
+function record(text, verdict, note){ const it=cur(); if(!it) return;
+ (WORK[it.item_id]=WORK[it.item_id]||[]).push({text:text.slice(0,120),verdict:verdict,note:note||''});
+ if(WORK[it.item_id].length>6) WORK[it.item_id].shift(); }
+function showVerdict(j, text){
+ const p=prog();
+ if(typeof j.hintLevel==='number') p.hints=j.hintLevel;
+ if(j.verdict==='correct'){ p.status='solved'; p.tries=(p.tries||0)+1;
+   record(text,'correct','Verified by the math checker.');
+   stepFeedback('That checks out — the math checker verified it. <button type="button" class="text-btn" onclick="moveQ(1)">Next question →</button>','ok'); }
+ else if(j.verdict==='partial'){ p.tries=(p.tries||0)+1;
+   record(text,'partial','Part right — one piece still missing.');
+   stepFeedback(esc(j.reply || 'Part of it is right. Send the piece that is still missing.')); }
+ else if(j.verdict==='not_an_attempt'){
+   stepFeedback(esc(j.reply || 'Nothing was marked — send just the line you got, like 3x = 9.')); }
+ else if(j.verdict==='incorrect'){ p.tries=(p.tries||0)+1;
+   record(text,'incorrect','Not equivalent yet — try the next move.');
+   stepFeedback(esc(j.reply || 'Not quite. Try one more step, or ask for a hint.'),'bad'); }
+ else if(j.verdict==='unverifiable'){
+   stepFeedback(esc(j.reply||'This one has no reference answer in your lesson.'),'bad'); } }
 function renderRecap(rc){ if(!rc||!rc.steps) return '';
- return '<ol>'+rc.steps.map(s=>'<li><b>'+esc(s.action)+'</b> $'+esc(s.result)+'$<br><small>'+esc(s.why)+'</small></li>').join('')
-   +'</ol><p><b>Answer:</b> $'+esc(rc.answer)+'$</p>'; }
-function render(j){ const rt=j.replyType||'bubble', txt=j.reply||'';
+ return '<ol>'+rc.steps.map(s=>'<li><b>'+esc(s.action)+'</b><br>You wrote: $'+esc(s.own||s.result)+'$<br><small>'+esc(s.why)+'</small></li>').join('')
+   +'</ol><p><b>Answer:</b> $'+esc(rc.answer)+'$</p><p><i>Key idea:</i> '+esc(rc.idea||'')+'</p>'
+   +(rc.note?'<p>'+esc(rc.note)+'</p>':'')
+   +'<button type="button" class="btn-tutor-action" onclick="similarProblem()">Try a similar problem</button> '
+   +'<button type="button" class="btn-tutor-action" onclick="nextQuestion()">Next question →</button>'; }
+function hintLabel(n){ // The ladder has four rungs; the student sees three
+ return Number(n)>=4 ? 'Smaller steps' : 'Hint '+n+' of 3'; }
+function render(j, sentText){ const rt=j.replyType||'bubble', txt=j.reply||'';
+ if(MODE==='steps' && j.totalSteps){ SESSION.total=j.totalSteps;
+   if(typeof j.stepIndex==='number') SESSION.index=j.stepIndex;
+   if(j.steps) SESSION.steps=j.steps;
+   else if(!SESSION.steps.length)
+     SESSION.steps=Array.from({length:j.totalSteps},(_,i)=>'Step '+(i+1)); }
  if(rt==='step'){ const m=/Step\s+(\d+)\s*:\s*(.*)/is.exec(txt);
-   say(m ? '<strong>Step '+m[1]+'</strong><br>'+esc(m[2]) : esc(txt), 'tutor-chat-card');
-   if(m) stepFeedback('<b>Step '+m[1]+'</b> '+esc(m[2])); }
- else if(rt==='hint'){ const hm=/^\s*(Hint\s*\d+)\s*[—\-–:]\s*(.*)$/is.exec(txt);
-   say(hm ? '💡 <strong>'+esc(hm[1])+'</strong><br>'+esc(hm[2]) : '💡 '+esc(txt), 'tutor-chat-hint');
-   stepFeedback(hm ? '<b>'+esc(hm[1])+'</b> '+esc(hm[2]) : esc(txt)); }
+   if(m){ const idx=parseInt(m[1],10)-1;
+     if(!SESSION.steps.length) SESSION.steps[idx]=stripStep(m[2]);
+     else SESSION.index=idx;
+     say('<strong>Step '+m[1]+'</strong><br>'+esc(m[2]), 'tutor-chat-card');
+     stepFeedback('<b>Step '+m[1]+'</b> '+esc(m[2])); }
+   else say(esc(txt)); }
+ else if(rt==='hint'){ const hm=/^\s*Hint\s*(\d+)\s*[—\-–:]\s*(.*)$/is.exec(txt);
+   if(hm){ const p=prog(); p.hints=Math.max(p.hints||0, Number(hm[1])); }
+   const lab=hm?hintLabel(hm[1]):'Hint';
+   say(hm ? '💡 <strong>'+esc(lab)+'</strong><br>'+esc(hm[2]) : '💡 '+esc(txt), 'tutor-chat-hint');
+   stepFeedback(hm ? '<b>'+esc(lab)+'</b> '+esc(hm[2]) : esc(txt)); }
  else if(rt==='success'){ say('✔ '+esc(txt), 'tutor-chat-ok'); }
+ else if(rt==='partial'){ say('<strong>Part right</strong><br>'+esc(txt), 'tutor-chat-card'); }
+ else if(rt==='format_help'){ say('<strong>Almost — one thing</strong><br>'+esc(txt), 'tutor-chat-card'); }
+ else if(rt==='support'){ say(esc(txt), 'tutor-chat-card');
+   stepFeedback(esc(txt)); }
  else if(rt==='recap'){ say(esc(txt)+'<br>'+renderRecap(j.recap), 'tutor-chat-card'); }
  else if(rt==='confirm_new_problem'){
    const d=say(esc(txt)+'<br><button type="button" class="btn-tutor-action" data-c="yes">Start new problem</button> <button type="button" class="btn-tutor-action" data-c="no">No, it’s my answer</button>');
    if(d) d.querySelectorAll('[data-c]').forEach(b=>b.addEventListener('click', ()=>{
      sendChat(b.getAttribute('data-c')==='yes' ? 'Start new problem' : "No, it's my answer"); })); }
  else say(esc(txt));
- if(MODE==='item' && typeof j.verdict!=='undefined') showVerdict(j);
- if(MODE==='steps' && j.totalSteps){ const lbl=document.getElementById('tutor-mode-label');
-   if(lbl) lbl.textContent='Step '+Math.min((j.stepIndex||0)+1, j.totalSteps)+' of '+j.totalSteps; } }
+ if(MODE==='item' && typeof j.verdict!=='undefined') showVerdict(j, sentText);
+ renderDots(); renderWork(); renderMeter(); renderNav(); renderMap(); }
+function stripStep(txt){ const m=/^(?:Step\s*\d+\s*[:\-—])\s*(.*)$/is.exec(String(txt||'').trim());
+ return (m?m[1]:txt).slice(0,60); }
 async function sendChat(text){ text=String(text||'').trim(); if(!text||BUSY) return;
+ clearTimeout(IDLE_TIMER);
  ask(text); const inp=document.getElementById('tutor-input'); if(inp) inp.value='';
  setBusy(true); const t=typing();
  try{ let j;
   if(MODE==='steps') j=await post('/api/tutor/message',{message:text.slice(0,500),
     pageContext:{type:'general', course:COURSE, mode:'practice'}});
-  else j=await post('/api/practice/attempt',{link_id:LINK_ID,
-    item_id:(ITEMS[QI]||{}).item_id||'', response:text.slice(0,500), course:COURSE});
-  t.remove(); render(j);
+  else j=await post('/api/practice/attempt',{ref:REF,
+    item_id:(cur()||{}).item_id||'', response:text.slice(0,500), course:COURSE});
+  t.remove(); render(j, text);
   if(MODE==='item' && j.verdict==='correct' && QI<ITEMS.length-1)
     setTimeout(()=>{ QI++; MODE='item'; setMode(); renderQ(); }, 900);
  }catch(e){ t.remove(); say('Sorry — '+esc(e.message||'that failed')+'. Try once more in a moment.'); }
- setBusy(false); }
-function askHint(){ sendChat(MODE==='steps' ? 'I need a hint on this step' : "I'm stuck — give me a hint"); }
+ setBusy(false); armIdle(); }
+function askHint(){ if((prog().hints||0)>=HINT_BUDGET){ stepFeedback('No hints left on this one — try the next step, or skip it and come back later.'); return; }
+ sendChat(MODE==='steps' ? 'I need a hint on this step' : "I'm stuck — give me a hint"); }
 function explainStep(){ sendChat('Explain this step'); }
-function startSteps(){ const p=((ITEMS[QI]||{}).prompt_latex||'').trim();
- if(!p){ say('This item has no equation I can split into steps. Send me your working in the chat box and I’ll guide the next move.'); return; }
- MODE='steps'; setMode(); sendChat(p); }
+function nextQuestion(){ if(QI>=ITEMS.length-1){
+   say('That is the last question in this set — pick another package any time.'); return; }
+ moveQ(1); say('New question above. Send me your first move, or ask for a hint.'); }
+function similarProblem(){ if(MODE==='steps'){ sendChat('Try a similar problem'); return; }
+ nextQuestion(); }
+// --- idle nudge: one gentle prompt per step, never a second one ---
+let IDLE_TIMER=null; const IDLE_MS=90000;
+function armIdle(){ clearTimeout(IDLE_TIMER); if(MODE!=='steps'||BUSY) return;
+ IDLE_TIMER=setTimeout(nudge, IDLE_MS); }
+async function nudge(){ if(MODE!=='steps'||BUSY) return;
+ try{ const j=await post('/api/tutor/nudge',{pageContext:{type:'general',
+   course:COURSE, mode:'practice'}});
+  if(j && j.reply){ render(j); } }
+ catch(e){ /* stay quiet */ } }
+let SESSION={steps:[],index:0,total:0};
+function startSteps(){ const it=cur(); const p=((it||{}).prompt_latex||'').trim();
+ if(!p){ say('This question has no equation I can split into steps. Send me your working in the chat box and I’ll guide the next move.'); return; }
+ MODE='steps'; SESSION={steps:[],index:0,total:0}; setMode(); sendChat(p); }
 function backToItem(){ MODE='item'; setMode();
- say('Back to the item above. Send me your attempt, or ask me a question about it.'); }
-async function loadItems(){ LINK_ID=document.getElementById('pkg-select').value;
- QI=0; MODE='item'; setMode();
- document.getElementById('tutor-chat').innerHTML='<div class="tutor-msg-bubble"><div class="tutor-avatar">🤖</div><div>Loading practice items…</div></div>';
- try{ const j=await post('/api/practice/items',{link_id:LINK_ID});
-  ITEMS=j.items||[]; renderQ();
+ say('Back to the question above. Send me your attempt, or ask me a question about it.'); }
+async function loadItems(){ REF=document.getElementById('pkg-select').value;
+ QI=0; MODE='item'; SESSION={steps:[],index:0,total:0}; WORK={};
+ setMode();
+ document.getElementById('tutor-chat').innerHTML='<div class="tutor-msg-bubble"><div class="tutor-avatar">🤖</div><div>Loading practice questions…</div></div>';
+ try{ const j=await post('/api/practice/items',{ref:REF});
+  ITEMS=j.items||[]; PROGRESS=j.progress||{}; HINT_BUDGET=j.hint_budget||3; COURSE=j.course||COURSE;
   const chip=document.getElementById('pkg-topic');
   if(chip){ chip.textContent=j.topic||''; chip.hidden=!j.topic; }
-  say(ITEMS.length?('Ready — '+ITEMS.length+' practice item(s) on <b>'+esc(j.title)+'</b>. Type your attempt or ask me anything.')
-    :'No practice items in this package yet.');
+  const count=document.getElementById('pkg-count');
+  if(count) count.textContent=ITEMS.length?ITEMS.length+' questions · about '+(ITEMS.length*3)+' min':'';
+  renderQ();
+  say(ITEMS.length?('Ready — '+ITEMS.length+' practice question(s) on <b>'+esc(j.title)+'</b>. Type your working, or ask me anything.')
+    :'No practice questions in this package yet.');
  }catch(e){ say('Error: '+esc(e.message||'failed')); } }
 function renderQ(){ stepFeedback(null);
- const counter=document.getElementById('q-counter'), fill=document.getElementById('q-progress'),
-   pct=document.getElementById('q-pct');
  if(!ITEMS.length){ setPrompt('');
   document.getElementById('q-context').textContent='Guided practice';
-  counter.textContent='QUESTION 0 OF 0'; fill.style.width='0%'; pct.textContent='0%';
-  document.getElementById('prev-btn').disabled=true;
-  document.getElementById('next-btn').disabled=true; return; }
+  document.getElementById('q-counter').textContent='QUESTION 0 OF 0';
+  document.getElementById('q-dots').innerHTML='';
+  document.getElementById('work-list').innerHTML=''; return; }
  QI=Math.max(0,Math.min(QI,ITEMS.length-1)); const it=ITEMS[QI];
- counter.textContent='QUESTION '+(QI+1)+' OF '+ITEMS.length;
- const done=Math.round(((QI+1)/ITEMS.length)*100);
- fill.style.width=done+'%'; pct.textContent=done+'%';
  document.getElementById('q-context').textContent=it.context||'Guided practice';
  setPrompt(it.prompt_latex);
+ const p=prog();
  clearInput();
- document.getElementById('prev-btn').disabled=QI===0;
- document.getElementById('next-btn').disabled=QI===ITEMS.length-1; }
+ if(p.draft){ if(USE_MATH_INPUT){ try{ mathBox().setValue(p.draft); }catch(e){} }
+   else plainBox().value=p.draft; }
+ renderDots(); renderWork(); renderMeter(); renderMap(); renderNav(); }
 function setPrompt(latex){ const el=document.getElementById('q-prompt');
  const t=String(latex||'').trim();
- if(!t){ el.textContent='No item text — send your working in the chat and I will guide the next move.'; return; }
+ if(!t){ el.textContent='No question text — send your working in the chat and I will guide the next move.'; return; }
  el.innerHTML='$$'+esc(t)+'$$'; if(window.renderMath) window.renderMath(el); }
+function gotoQ(i){ if(i<0||i>=ITEMS.length) return; QI=i; MODE='item'; setMode(); renderQ(); }
 function moveQ(d){ const next=QI+d; if(next<0||next>ITEMS.length-1) return;
- QI=next; MODE='item'; setMode(); renderQ(); }
-function skipQ(){ if(QI>=ITEMS.length-1){ stepFeedback('This is the last item in the package.'); return; }
- moveQ(1); }
+ saveNow(); gotoQ(next); }
+function skipQ(){ const it=cur(); if(!it) return;
+ prog().status='skipped'; saveNow('skipped');
+ renderDots(); renderWork(); renderNav();
+ if(QI<ITEMS.length-1) setTimeout(()=>moveQ(1), 350);
+ else stepFeedback('That was the last question in this set. Pick another package any time.'); }
 function checkAttempt(){ const val=getInput();
- if(!val){ stepFeedback('Enter your next step first, or tap <b>Get a Hint</b>.'); return; }
+ if(!val){ stepFeedback('Type your next step first, or ask for a hint.'); return; }
  sendChat(val); }
 window.addEventListener('load', ()=>{ const f=document.getElementById('tutor-form');
  if(f) f.addEventListener('submit', (ev)=>{ ev.preventDefault();
    sendChat(document.getElementById('tutor-input').value); });
- if(LINK_ID) loadItems(); });
+ ['plain-input'].forEach(id=>{ const el=document.getElementById(id);
+   if(el) el.addEventListener('input', queueSave); });
+ const ti=document.getElementById('tutor-input');
+ if(ti) ti.addEventListener('input', armIdle);
+ const mf=document.getElementById('mf');
+ if(mf) mf.addEventListener('change', queueSave);
+ if(REF) loadItems(); });
 </script>
 {% endblock %}

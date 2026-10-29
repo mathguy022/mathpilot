@@ -153,6 +153,7 @@
   <section class="card"><h3>📂 Saved Drafts</h3>
   <p class="muted">Browse, edit, assign and delete saved lessons and assignments on their own page.</p>
   <div class="row" style="margin-top:8px"><a class="btn ghost wide" href="/instructor/drafts">📂 Open Saved Drafts</a></div></section>
+  {% include "_shared_files_card.html" %}
 </aside>
 <main class="lesson-canvas" id="lesson-canvas" aria-label="Active lesson canvas">
 <div class="card canvas-head"><h3>Workspace Canvas</h3>
@@ -208,18 +209,11 @@ function showTab(t){ TAB=t;
  document.getElementById('preview-asg').style.display=t==='assignment'?'block':'none';
  document.getElementById('tabLesson').classList.toggle('active',t==='lesson');
  document.getElementById('tabAsg').classList.toggle('active',t==='assignment'); }
-// Minimal markdown-lite: escape HTML, then paragraphs / numbered items /
-// bold / inline code. $...$ and $$...$$ pass through for KaTeX.
-function renderPreview(src){ let h=esc(src);
- h=h.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');
- const lines=h.split('\n'); let out='', inList=false;
- for(const ln of lines){ const t=ln.trim();
-  const item=t.match(/^(?:\d+[.)]|[-*])\s+(.*)$/);
-  if(item){ if(!inList){ out+='<ol>'; inList=true; } out+='<li>'+item[1]+'</li>'; }
-  else { if(inList){ out+='</ol>'; inList=false; }
-   if(t) out+='<p>'+t+'</p>'; } }
- if(inList) out+='</ol>';
- return out||'<p class="muted">Empty section.</p>'; }
+// Section bodies are markdown-lite + LaTeX; shared renderer in math-render.js.
+function renderPreview(src){ const h=window.renderMarkdownLite
+  ? window.renderMarkdownLite(src)
+  : '<p>'+esc(src).replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>')+'</p>';
+ return h||'<p class="muted">Empty section.</p>'; }
 function updatePreview(ta){ const card=ta.closest('[data-sec-card]');
  const pv=card?card.querySelector('.sec-preview'):null;
  if(pv){ pv.innerHTML=renderPreview(ta.value);
@@ -251,7 +245,7 @@ function renderLesson(){ const prev=document.getElementById('preview-lesson');
  html+=(LESSON.sections||[]).map((s,si)=>{
   let h='<div class="card lesson-sec" style="margin-top:12px" data-sec-card="'+si+'"><h3>'+esc(s.heading||s.kind)+' <small class="muted">'+esc(s.kind)+'</small></h3>';
   h+='<div class="sec-preview">'+renderPreview(s.body_markdown||'')+'</div>';
-  h+='<details class="sec-edit"><summary><small class="muted">Edit source (markdown + LaTeX)</small></summary><textarea rows="4" data-sec="'+si+'" class="sec-body" oninput="updatePreview(this)">'+esc(s.body_markdown||'')+'</textarea></details>';
+  h+='<details class="sec-edit"><summary>&#9998;&#65039; Edit this section <small class="muted">plain text; put math between dollar signs — preview updates as you type</small></summary><textarea rows="9" data-sec="'+si+'" class="sec-body" oninput="updatePreview(this)" aria-label="Edit text of section '+(si+1)+'">'+esc(s.body_markdown||'')+'</textarea></details>';
   (s.examples||[]).forEach((e,ei)=>{ h+='<details class="steps" style="margin-top:8px"><summary>Worked example '+(ei+1)+' '+vbadge(e.verification||'needs-review')+'</summary>'
    +'<p><b>Problem:</b> '+esc(asMath(e.problem_latex))+'</p><ol>'
    +(e.steps||[]).map(st=>'<li>'+esc(asMath(st.expression))+'<br><small class="muted">'+esc(st.why||'')+'</small></li>').join('')

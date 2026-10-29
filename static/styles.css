@@ -1134,7 +1134,7 @@ math-field:focus-within {
 .float-tutor-iconbtn:focus-visible { outline: 2px solid #ffffff; outline-offset: 1px; }
 .float-tutor-graded {
   background: var(--amber-bg, #fffbeb);
-  color: var(--amber-text, #b45309);
+  color: var(--amber-text);
   border-bottom: 1px solid var(--amber-border, #fde68a);
   font-size: 12px;
   font-weight: 700;
@@ -1198,9 +1198,24 @@ math-field:focus-within {
   border-radius: 12px;
   padding: 10px 13px;
   max-width: 88%;
+  /* The hint card keeps a pale background in every theme, so pin a dark body
+     color; otherwise dark mode's light message text renders invisibly. */
+  color: #78350f;
 }
-.float-tutor-hintcard strong { display: block; font-size: 13px; color: var(--amber-text, #b45309); margin-bottom: 2px; }
+.float-tutor-hintcard strong { display: block; font-size: 13px; color: var(--amber-text); margin-bottom: 2px; }
 .float-tutor-success { color: var(--green-text, #047857); font-weight: 700; }
+/* Steady, low-contrast card for "you're not behind" moments: the idle nudge,
+   and a student who says they are lost or fed up. */
+.float-tutor-support {
+  background: var(--purple-soft, #f5f3ff);
+  border: 1px solid var(--purple-border, #ddd6fe);
+  border-radius: 12px;
+  padding: 10px 13px;
+  max-width: 88%;
+  /* Same reason as the hint card: this background stays pale in dark mode,
+     so the message text must be pinned dark or it goes invisible. */
+  color: #4c1d95;
+}
 .float-tutor-recap {
   border: 1px solid var(--green-border, #a7f3d0);
   border-radius: 12px;
@@ -1735,4 +1750,165 @@ math-field:focus-within {
 @media (max-width: 640px) {
   .practice-actions .btn-primary { min-width: 0; flex: 1; }
   .practice-card { padding: 18px; }
+}
+
+/* Lesson section editor (instructor canvas + student lesson body) */
+.sec-preview { font-size: 15.5px; line-height: 1.7; color: var(--navy); }
+.sec-preview p { margin: 0 0 10px; }
+.sec-preview ol { margin: 0 0 10px; padding-left: 22px; }
+.sec-preview li { margin-bottom: 6px; }
+.sec-preview h4 { margin: 14px 0 6px; font-size: 15px; }
+.sec-edit { margin-top: 12px; }
+.sec-edit summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--purple-primary);
+}
+.sec-edit textarea,
+.sec-body {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  padding: 12px 14px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fbfdff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.sec-body:focus {
+  border-color: var(--purple-primary);
+  outline: 3px solid var(--purple-light);
+}
+
+/* Practice workspace: work on the left, tutor guidance on the right */
+.practice-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-top: 16px;
+}
+.tutor-rail { position: sticky; top: 16px; margin-bottom: 0; }
+.tutor-rail .tutor-chat-box {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+.q-dots { display: flex; gap: 6px; margin-left: 12px; }
+.q-dot {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px; font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.q-dot:hover { border-color: var(--purple-primary); color: var(--purple-primary); }
+.q-dot.current {
+  background: var(--purple-primary);
+  border-color: var(--purple-primary);
+  color: #fff;
+}
+.q-dot.solved { background: var(--green-bg); border-color: var(--green-border); color: var(--green-text); }
+.q-dot.skipped { border-style: dashed; }
+.work-head { font-size: 14px; margin: 4px 0 8px; }
+.work-list { list-style: none; margin: 0 0 14px; padding: 0; }
+.work-row {
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #eef1f8;
+  font-size: 14px;
+}
+.work-row:last-child { border-bottom: none; }
+.work-row.empty, .work-row.solved, .work-row.skipped { color: var(--navy); }
+.work-n {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: var(--green-bg);
+  color: var(--green-text);
+  font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.work-row.incorrect .work-n, .work-row.empty .work-n {
+  background: var(--purple-soft); color: var(--purple-primary);
+}
+.work-row p { margin: 3px 0 0; font-size: 13px; }
+.work-good { color: var(--green-text); }
+.work-bad { color: var(--amber-text); }
+.answer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+.answer-foot .muted { font-size: 12px; }
+.step-feedback.bad { background: var(--amber-bg); border-color: var(--amber-border); }
+.step-feedback.bad .step-feedback-head { color: var(--amber-text); }
+.rail-block { margin-top: 14px; }
+.rail-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.rail-note { font-size: 12px; margin: 8px 0 0; }
+.rail-steps { list-style: none; margin: 0; padding: 0; }
+.rail-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.rail-step.done { color: var(--green-text); }
+.rail-step.now { color: var(--navy); font-weight: 700; }
+.rail-step-n {
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: #eef1f8;
+  font-size: 11px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.rail-step.done .rail-step-n { background: var(--green-bg); color: var(--green-text); }
+.rail-step.now .rail-step-n { background: var(--purple-primary); color: #fff; }
+.rail-step-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hint-meter { display: flex; gap: 6px; }
+.hint-seg {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #eef1f8;
+}
+.hint-seg.used { background: #fbbf24; }
+.ask-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-btn {
+  border: 1px solid var(--purple-border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--purple-primary);
+  font-size: 12.5px; font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chip-btn:hover { background: var(--purple-soft); }
+@media (max-width: 900px) {
+  .practice-grid { grid-template-columns: minmax(0, 1fr); }
+  .tutor-rail { position: static; }
 }

@@ -26,12 +26,18 @@
 </div>
 
 {% for q in items %}
-<div class="card q-pane" id="q-{{ loop.index0 }}" style="margin-top:12px; {% if not loop.first %}display:none{% endif %}">
+<div class="card q-pane" id="q-{{ loop.index0 }}" data-item="{{ q.item_id }}" style="margin-top:12px; {% if not loop.first %}display:none{% endif %}">
   <h3>Q{{ loop.index }} <small class="muted">· difficulty {{ q.difficulty }}</small></h3>
   <p class="q-prompt" data-latex="{{ q.prompt_latex|e }}" style="font-size:16px;"></p>
-  {% for s in q.steps %}<p class="muted"><small>Step {{ loop.index }}: {{ s.description }}</small></p>{% endfor %}
   <label for="ans-{{ loop.index0 }}"><b>Your answer</b></label>
-  <math-field id="ans-{{ loop.index0 }}" data-item="{{ q.item_id }}" aria-label="Answer for question {{ loop.index }}"></math-field>
+  <div class="answer-box">
+    <math-field id="ans-{{ loop.index0 }}" data-item="{{ q.item_id }}" aria-label="Answer for question {{ loop.index }}"></math-field>
+  </div>
+  <div class="row" style="margin-top:10px; align-items:center; gap:12px;">
+    <button type="button" class="btn small" id="chk-{{ loop.index0 }}" onclick="checkAnswer({{ loop.index0 }})">✓ Check answer</button>
+    <span class="muted" id="tries-{{ loop.index0 }}" style="font-size:12.5px;"></span>
+  </div>
+  <p id="fb-{{ loop.index0 }}" role="status" style="margin:8px 0 0; font-weight:600;"></p>
   <div class="row" style="margin-top:10px;">
     {% if not loop.first %}<button type="button" class="btn small ghost" onclick="showQ({{ loop.index0 - 1 }})">← Prev</button>{% endif %}
     {% if not loop.last %}<button type="button" class="btn small ghost" onclick="showQ({{ loop.index0 + 1 }})">Next →</button>{% endif %}
@@ -43,7 +49,7 @@
 {% endif %}
 
 <div class="row" style="margin-top:16px;">
-  <button type="button" class="btn ghost" id="save-btn" onclick="saveProgress()">💾 Save Progress</button>
+  <button type="button" class="btn ghost" id="save-btn" onclick="saveProgress(false)">💾 Save &amp; continue later</button>
   <button type="button" class="btn" id="submit-btn" onclick="submitAsg()">Submit Assignment</button>
   <a class="btn ghost" href="/assignments">← Back to My Assignments</a>
 </div>
@@ -51,24 +57,68 @@
 <script>
 const LINK_ID="{{ publication.link_id }}", NQ={{ items|length }};
 const SAVED={{ saved|tojson }};
-function collect(){ const a={}; document.querySelectorAll('math-field[data-item]').forEach(m=>{ let v=''; try{ v=m.getValue('latex')||m.value||''; }catch(e){ v=m.value||''; } a[m.dataset.item]=(v||'').trim(); }); return a; }
+const ATTEMPTS={{ attempts|tojson }};
+const MAXTRIES={{ max_tries }};
+function mfVal(m){ let v=''; try{ v=m.getValue('latex')||m.value||''; }catch(e){ v=m.value||''; } return (v||'').trim(); }
+function collect(){ const a={}; document.querySelectorAll('math-field[data-item]').forEach(m=>{ a[m.dataset.item]=mfVal(m); }); return a; }
 function restore(){ document.querySelectorAll('math-field[data-item]').forEach(m=>{ const v=SAVED[m.dataset.item]; if(v){ try{m.setValue(v);}catch(e){} } }); }
 function showQ(i){ document.querySelectorAll('.q-pane').forEach((p,j)=>{ p.style.display=(j===i)?'block':'none'; }); document.getElementById('q-nav').value=i; if(window.renderMath) window.renderMath(document.getElementById('q-'+i)); }
-// Wrap a prompt in $...$ only when it has no math delimiter yet, matching the
-// instructor view (asMath). Generated prompt_latex already embeds $/$$, so the
-// old unconditional wrap produced nested delimiters KaTeX could not parse.
 function asMath(s){ s=String(s==null?"":s).trim(); if(!s) return ""; if(/\$|\\\(|\\\[/.test(s)) return s; return "$"+s+"$"; }
 function fillPrompts(){ document.querySelectorAll('.q-prompt').forEach(el=>{ el.textContent=asMath(el.dataset.latex||''); }); }
-function setState(t){ document.getElementById('save-state').textContent=t; }
-async function saveProgress(){ const b=document.getElementById('save-btn'); b.disabled=true; setState('Saving…');
+function setState(t){ const el=document.getElementById('save-state'); if(el) el.textContent=t; }
+function setFeedback(i, text, kind){
+  const fb=document.getElementById('fb-'+i); if(!fb) return;
+  fb.textContent=text;
+  fb.style.color = kind==='correct' ? '#15803d' : (kind==='wrong' ? '#b91c1c' : '#64748b');
+}
+function setTries(i, triesLeft, locked, correct){
+  const el=document.getElementById('tries-'+i); if(!el) return;
+  if(correct){ el.textContent='✓ Solved'; }
+  else if(locked){ el.textContent='No tries left'; }
+  else { el.textContent = triesLeft+' of '+MAXTRIES+' tries left'; }
+}
+function lockQuestion(i, correct){
+  const mf=document.getElementById('ans-'+i); if(mf){ try{ mf.readOnly=true; }catch(e){} }
+  const btn=document.getElementById('chk-'+i); if(btn){ btn.disabled=true; btn.style.opacity=.5; }
+}
+async function checkAnswer(i){
+  const mf=document.getElementById('ans-'+i); const item=mf.dataset.item;
+  const btn=document.getElementById('chk-'+i); btn.disabled=true;
+  setFeedback(i,'Checking…','muted');
+  try{
+    const r=await fetch('/api/assignments/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_id:LINK_ID,item_id:item,answer:mfVal(mf)})});
+    const j=await r.json();
+    if(!r.ok){ setFeedback(i, j.detail||'Could not check.', 'wrong'); btn.disabled=false; return; }
+    setFeedback(i, j.feedback, j.correct?'correct':'wrong');
+    setTries(i, j.tries_left, j.locked, j.correct);
+    if(j.locked){ lockQuestion(i, j.correct); } else { btn.disabled=false; }
+    setState('Progress saved ✔');
+  }catch(e){ setFeedback(i,'Request failed.','wrong'); btn.disabled=false; }
+}
+// Restore each question's saved answer and lock solved/exhausted ones.
+function initStates(){
+  document.querySelectorAll('.q-pane').forEach(p=>{
+    const i=parseInt(p.id.split('-')[1],10); const item=p.dataset.item;
+    const a=ATTEMPTS[item]||{tries:0,correct:false};
+    const correct=!!a.correct, exhausted=(a.tries||0)>=MAXTRIES;
+    setTries(i, MAXTRIES-(a.tries||0), correct||exhausted, correct);
+    if(correct){ setFeedback(i,'Great — that\'s correct!','correct'); lockQuestion(i,true); }
+    else if(exhausted){ setFeedback(i,'You\'ve used all 3 tries on this question.','wrong'); lockQuestion(i,false); }
+  });
+}
+let saveTimer=null;
+function queueSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(()=>saveProgress(true),900); }
+async function saveProgress(silent){ const b=document.getElementById('save-btn'); if(!silent&&b){b.disabled=true;} setState('Saving…');
  try{ const r=await fetch('/api/assignments/progress',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_id:LINK_ID,answers:collect()})});
-  const j=await r.json(); if(!r.ok){ setState('Error: '+(j.detail||'failed')); b.disabled=false; return; }
-  setState('Progress saved ✔'); }catch(e){ setState('Request failed.'); } b.disabled=false; }
+  const j=await r.json(); if(!r.ok){ setState('Error: '+(j.detail||'failed')); if(b){b.disabled=false;} return; }
+  const t=new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); setState('Saved · '+t); }catch(e){ setState('Request failed.'); } if(b){b.disabled=false;} }
 async function submitAsg(){ if(!confirm('Submit this assignment? You cannot change answers after submitting.')) return;
  const b=document.getElementById('submit-btn'); b.disabled=true; setState('Submitting…');
  try{ const r=await fetch('/api/assignments/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_id:LINK_ID,answers:collect()})});
   const j=await r.json(); if(!r.ok){ setState('Error: '+(j.detail||'failed')); b.disabled=false; return; }
   location.reload(); }catch(e){ setState('Request failed.'); b.disabled=false; } }
-window.addEventListener('load', ()=>{ restore(); fillPrompts(); if(window.renderMath) window.renderMath(document.body); });
+window.addEventListener('load', ()=>{ restore(); fillPrompts(); initStates();
+  document.querySelectorAll('math-field').forEach(m=>{ m.addEventListener('change', queueSave); });
+  if(window.renderMath) window.renderMath(document.body); });
 </script>
 {% endblock %}

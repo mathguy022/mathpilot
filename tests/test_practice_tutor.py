@@ -46,7 +46,7 @@ _course = "Algebra 1"
 
 def _attempt(text, item=ITEM):
     return client.post("/api/practice/attempt", json={
-        "link_id": _pub[1], "item_id": item, "response": text,
+        "ref": _pub[1], "item_id": item, "response": text,
         "course": _course}).json()
 
 
@@ -68,6 +68,19 @@ def _publish():
 def _state_keys(link_id):
     return [k for k in list(PRACTICE_STATE) + list(DEMO_HISTORY)
             if k.startswith(f"practice:{link_id}:")]
+
+
+def _clear_saved_progress(link_id):
+    """The ladder is persisted now, so a fresh test needs the rows gone too."""
+    from app.db import PracticeProgress
+
+    db = SessionLocal()
+    try:
+        db.query(PracticeProgress).filter(
+            PracticeProgress.package_ref == link_id).delete()
+        db.commit()
+    finally:
+        db.close()
 
 
 @pytest.fixture(scope="module")
@@ -94,6 +107,7 @@ def _clean(_deck):
     for k in _state_keys(link_id):
         PRACTICE_STATE.pop(k, None)
         DEMO_HISTORY.pop(k, None)
+    _clear_saved_progress(link_id)
     with patch("app.config.ai_configured", return_value=True), \
          patch("app.nebius.float_chat", return_value=None), \
          patch("app.nebius.generate_plan", return_value=None), \
@@ -103,6 +117,7 @@ def _clean(_deck):
     for k in _state_keys(link_id):
         PRACTICE_STATE.pop(k, None)
         DEMO_HISTORY.pop(k, None)
+    _clear_saved_progress(link_id)
 
 
 def test_prose_is_not_graded_and_burns_no_hint():
@@ -217,7 +232,7 @@ def test_help_request_gives_a_hint_and_remembers_the_level():
 
 def test_empty_message_prompts_for_input_without_a_verdict():
     body = client.post("/api/practice/attempt", json={
-        "link_id": _pub[1], "item_id": ITEM, "response": "   "}).json()
+        "ref": _pub[1], "item_id": ITEM, "response": "   "}).json()
     assert body["verdict"] == "incomplete", body
     assert "step by step" in body["reply"]
 
@@ -256,3 +271,17 @@ def test_practice_content_never_ships_the_solution_section():
     page = client.get(f"/learn/{_pub[1]}")
     assert page.status_code == 200
     assert "Answer: $3(x-3)$" not in page.text
+
+
+def test_retyping_the_item_is_not_marked_correct():
+    """The item text came back as "verified" for expression items.
+
+    "3x-9" is graded by equivalence, so the question and a copy of it look
+    the same to the checker; only an exact restatement is refused, so a real
+    rewrite still verifies.
+    """
+    body = _attempt("3x-9")
+    assert body["verdict"] == "not_an_attempt", body
+    assert (body["misses"], body["hintLevel"]) == (0, 0), body
+    assert "first move" in body["reply"], body
+    assert _attempt("3(x-3)")["verdict"] == "correct"

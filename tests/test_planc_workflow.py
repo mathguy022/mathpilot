@@ -62,6 +62,10 @@ def test_lesson_draft_approve_publish_learn():
     api = client.get(f"/api/learn/{link}")
     assert api.status_code == 200
     assert "solutions" not in str(api.json()).lower()
+    # Section bodies reach the page as markdown-lite source for the shared
+    # renderer (data-md), not as flat text with visible markup.
+    assert 'data-md="A limit is $' in page.text
+    assert 'class="sec-preview" data-md=' in page.text
     # Published lesson is frozen.
     again = client.post("/api/lessons/save", json={
         "id": lid, "topic": "Limits", "lesson": LESSON, "settings": {}})
