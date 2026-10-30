@@ -26,8 +26,19 @@ COOKIE = "mp_viewer"
 SECRET_ENV = "MATHPILOT_SECRET"
 MAX_AGE = 30 * 24 * 3600
 
-# Without a configured secret, sessions stay valid only for this process.
-_SECRET = (os.getenv(SECRET_ENV) or "").encode() or secrets.token_bytes(32)
+# Without a configured secret, sessions stay valid across serverless instances
+# by deriving a stable seed from DATABASE_URL or falling back to a demo secret.
+def _get_secret() -> bytes:
+    env_sec = os.getenv(SECRET_ENV)
+    if env_sec:
+        return env_sec.encode()
+    from .config import DATABASE_URL
+    if DATABASE_URL and "sqlite" not in DATABASE_URL:
+        return hashlib.sha256(f"mathpilot-stable-secret-{DATABASE_URL}".encode()).digest()
+    return b"mathpilot-demo-static-cookie-secret-key-32b"
+
+
+_SECRET = _get_secret()
 
 
 def _sign(body: str) -> str:

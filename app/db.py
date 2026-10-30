@@ -17,13 +17,26 @@ from datetime import datetime, timezone
 from .config import DATABASE_URL
 
 db_url = DATABASE_URL
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-
 if "sqlite" in db_url:
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
 else:
-    engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300)
+    # Normalize postgres:// to postgresql://
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    # Prefer psycopg (v3) binary when available for robust serverless connectivity
+    if db_url.startswith("postgresql://") and not db_url.startswith("postgresql+"):
+        try:
+            import psycopg  # noqa: F401
+            db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        except ImportError:
+            pass
+    engine = create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=5,
+        max_overflow=2,
+    )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
@@ -196,130 +209,150 @@ class Publication(Base):
 
 
 def ensure_schema():
-    """Lightweight additive migration for existing SQLite databases.
+    """Lightweight additive migration for existing SQLite and Postgres databases.
     Fresh Postgres databases have all tables created directly via Base.metadata.create_all.
     Additive only — never drops or renames.
     """
-    if "sqlite" not in DATABASE_URL:
-        return
-    with engine.begin() as conn:
-        existing = {r[1] for r in conn.exec_driver_sql(
-            f"PRAGMA table_info({Publication.__tablename__})")}
-        if "assigned_course" not in existing:
+    if "sqlite" in DATABASE_URL:
+        with engine.begin() as conn:
+            existing = {r[1] for r in conn.exec_driver_sql(
+                f"PRAGMA table_info({Publication.__tablename__})")}
+            if "assigned_course" not in existing:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {Publication.__tablename__} "
+                    "ADD COLUMN assigned_course VARCHAR(200) DEFAULT ''")
+            # Submissions table for student assignment work (MVP).
             conn.exec_driver_sql(
-                f"ALTER TABLE {Publication.__tablename__} "
-                "ADD COLUMN assigned_course VARCHAR(200) DEFAULT ''")
-        # Submissions table for student assignment work (MVP).
-        conn.exec_driver_sql(
-            f"""CREATE TABLE IF NOT EXISTS {Submission.__tablename__} (
-                id INTEGER PRIMARY KEY,
-                publication_id INTEGER NOT NULL REFERENCES {Publication.__tablename__}(id),
-                user_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
-                answers_json TEXT DEFAULT '{{}}',
-                status VARCHAR(20) DEFAULT 'draft',
-                submitted_at DATETIME,
-                created_at DATETIME,
-                updated_at DATETIME)""")
-        # Per-item attempt tracking added after the first MVP release.
-        sub_cols = {r[1] for r in conn.exec_driver_sql(
-            f"PRAGMA table_info({Submission.__tablename__})")}
-        if "attempts_json" not in sub_cols:
+                f"""CREATE TABLE IF NOT EXISTS {Submission.__tablename__} (
+                    id INTEGER PRIMARY KEY,
+                    publication_id INTEGER NOT NULL REFERENCES {Publication.__tablename__}(id),
+                    user_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                    answers_json TEXT DEFAULT '{{}}',
+                    status VARCHAR(20) DEFAULT 'draft',
+                    submitted_at DATETIME,
+                    created_at DATETIME,
+                    updated_at DATETIME)""")
+            # Per-item attempt tracking added after the first MVP release.
+            sub_cols = {r[1] for r in conn.exec_driver_sql(
+                f"PRAGMA table_info({Submission.__tablename__})")}
+            if "attempts_json" not in sub_cols:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {Submission.__tablename__} "
+                    "ADD COLUMN attempts_json TEXT DEFAULT '{}'")
+            # Floating-tutor tables (new tables only; existing ones untouched).
             conn.exec_driver_sql(
-                f"ALTER TABLE {Submission.__tablename__} "
-                "ADD COLUMN attempts_json TEXT DEFAULT '{}'")
-        # Floating-tutor tables (new tables only; existing ones untouched).
-        conn.exec_driver_sql(
-            f"""CREATE TABLE IF NOT EXISTS {TutorSession.__tablename__} (
-                id INTEGER PRIMARY KEY,
-                student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
-                course_id VARCHAR(200) DEFAULT '',
-                problem_text TEXT DEFAULT '',
-                solution_plan_json TEXT DEFAULT '[]',
-                status VARCHAR(20) DEFAULT 'active',
-                current_step_index INTEGER DEFAULT 0,
-                total_steps INTEGER DEFAULT 0,
-                total_misses INTEGER DEFAULT 0,
-                hints_used INTEGER DEFAULT 0,
-                graded_mode BOOLEAN DEFAULT 0,
-                task TEXT DEFAULT '',
-                created_at DATETIME,
-                completed_at DATETIME)""")
-        # The task the student was set, so the tutor knows what is asked.
-        sess_cols = {r[1] for r in conn.exec_driver_sql(
-            f"PRAGMA table_info({TutorSession.__tablename__})")}
-        if "task" not in sess_cols:
+                f"""CREATE TABLE IF NOT EXISTS {TutorSession.__tablename__} (
+                    id INTEGER PRIMARY KEY,
+                    student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                    course_id VARCHAR(200) DEFAULT '',
+                    problem_text TEXT DEFAULT '',
+                    solution_plan_json TEXT DEFAULT '[]',
+                    status VARCHAR(20) DEFAULT 'active',
+                    current_step_index INTEGER DEFAULT 0,
+                    total_steps INTEGER DEFAULT 0,
+                    total_misses INTEGER DEFAULT 0,
+                    hints_used INTEGER DEFAULT 0,
+                    graded_mode BOOLEAN DEFAULT 0,
+                    task TEXT DEFAULT '',
+                    created_at DATETIME,
+                    completed_at DATETIME)""")
+            # The task the student was set, so the tutor knows what is asked.
+            sess_cols = {r[1] for r in conn.exec_driver_sql(
+                f"PRAGMA table_info({TutorSession.__tablename__})")}
+            if "task" not in sess_cols:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {TutorSession.__tablename__} "
+                    "ADD COLUMN task TEXT DEFAULT ''")
             conn.exec_driver_sql(
-                f"ALTER TABLE {TutorSession.__tablename__} "
-                "ADD COLUMN task TEXT DEFAULT ''")
-        conn.exec_driver_sql(
-            f"""CREATE TABLE IF NOT EXISTS {TutorEvent.__tablename__} (
-                id INTEGER PRIMARY KEY,
-                session_id INTEGER NOT NULL REFERENCES {TutorSession.__tablename__}(id),
-                step_index INTEGER DEFAULT 0,
-                student_input TEXT DEFAULT '',
-                verdict VARCHAR(30) DEFAULT '',
-                hint_level INTEGER DEFAULT 0,
-                event_type VARCHAR(30) DEFAULT 'message',
-                tutor_reply TEXT DEFAULT '',
-                created_at DATETIME)""")
-        # What the tutor said back: lets the widget answer in context.
-        ev_cols = {r[1] for r in conn.exec_driver_sql(
-            f"PRAGMA table_info({TutorEvent.__tablename__})")}
-        if "tutor_reply" not in ev_cols:
+                f"""CREATE TABLE IF NOT EXISTS {TutorEvent.__tablename__} (
+                    id INTEGER PRIMARY KEY,
+                    session_id INTEGER NOT NULL REFERENCES {TutorSession.__tablename__}(id),
+                    step_index INTEGER DEFAULT 0,
+                    student_input TEXT DEFAULT '',
+                    verdict VARCHAR(30) DEFAULT '',
+                    hint_level INTEGER DEFAULT 0,
+                    event_type VARCHAR(30) DEFAULT 'message',
+                    tutor_reply TEXT DEFAULT '',
+                    created_at DATETIME)""")
+            # What the tutor said back: lets the widget answer in context.
+            ev_cols = {r[1] for r in conn.exec_driver_sql(
+                f"PRAGMA table_info({TutorEvent.__tablename__})")}
+            if "tutor_reply" not in ev_cols:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {TutorEvent.__tablename__} "
+                    "ADD COLUMN tutor_reply TEXT DEFAULT ''")
+            # Cached practice set on lessons (generated questions + answers).
+            les_cols = {r[1] for r in conn.exec_driver_sql(
+                f"PRAGMA table_info({Lesson.__tablename__})")}
+            if "practice_json" not in les_cols:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {Lesson.__tablename__} "
+                    "ADD COLUMN practice_json TEXT DEFAULT '{}'")
+            # Ungraded practice progress (autosave).
             conn.exec_driver_sql(
-                f"ALTER TABLE {TutorEvent.__tablename__} "
-                "ADD COLUMN tutor_reply TEXT DEFAULT ''")
-        # Cached practice set on lessons (generated questions + answers).
-        les_cols = {r[1] for r in conn.exec_driver_sql(
-            f"PRAGMA table_info({Lesson.__tablename__})")}
-        if "practice_json" not in les_cols:
+                f"""CREATE TABLE IF NOT EXISTS {PracticeProgress.__tablename__} (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                    package_ref VARCHAR(64) NOT NULL,
+                    item_id VARCHAR(64) NOT NULL,
+                    status VARCHAR(20) DEFAULT 'started',
+                    tries INTEGER DEFAULT 0,
+                    hints INTEGER DEFAULT 0,
+                    draft TEXT DEFAULT '',
+                    updated_at DATETIME)""")
+            # Tutor thread transcript + hint ladder, the rate-limit window and the
+            # pending "start a new problem?" offer. These were process-memory dicts
+            # before; the tables are what make them survive a restart.
             conn.exec_driver_sql(
-                f"ALTER TABLE {Lesson.__tablename__} "
-                "ADD COLUMN practice_json TEXT DEFAULT '{}'")
-        # Ungraded practice progress (autosave).
-        conn.exec_driver_sql(
-            f"""CREATE TABLE IF NOT EXISTS {PracticeProgress.__tablename__} (
-                id INTEGER PRIMARY KEY,
-                user_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
-                package_ref VARCHAR(64) NOT NULL,
-                item_id VARCHAR(64) NOT NULL,
-                status VARCHAR(20) DEFAULT 'started',
-                tries INTEGER DEFAULT 0,
-                hints INTEGER DEFAULT 0,
-                draft TEXT DEFAULT '',
-                updated_at DATETIME)""")
-        # Tutor thread transcript + hint ladder, the rate-limit window and the
-        # pending "start a new problem?" offer. These were process-memory dicts
-        # before; the tables are what make them survive a restart.
-        conn.exec_driver_sql(
-            f"""CREATE TABLE IF NOT EXISTS {TutorThread.__tablename__} (
-                id INTEGER PRIMARY KEY,
-                key VARCHAR(200) NOT NULL UNIQUE,
-                messages_json TEXT DEFAULT '[]',
-                hints INTEGER DEFAULT 0,
-                misses INTEGER DEFAULT 0,
-                unreadable INTEGER DEFAULT 0,
-                moves INTEGER DEFAULT 0,
-                created_at DATETIME,
-                updated_at DATETIME)""")
-        th_cols = {r[1] for r in conn.exec_driver_sql(
-            f"PRAGMA table_info({TutorThread.__tablename__})")}
-        if "moves" not in th_cols:
+                f"""CREATE TABLE IF NOT EXISTS {TutorThread.__tablename__} (
+                    id INTEGER PRIMARY KEY,
+                    key VARCHAR(200) NOT NULL UNIQUE,
+                    messages_json TEXT DEFAULT '[]',
+                    hints INTEGER DEFAULT 0,
+                    misses INTEGER DEFAULT 0,
+                    unreadable INTEGER DEFAULT 0,
+                    moves INTEGER DEFAULT 0,
+                    created_at DATETIME,
+                    updated_at DATETIME)""")
+            th_cols = {r[1] for r in conn.exec_driver_sql(
+                f"PRAGMA table_info({TutorThread.__tablename__})")}
+            if "moves" not in th_cols:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE {TutorThread.__tablename__} "
+                    "ADD COLUMN moves INTEGER DEFAULT 0")
             conn.exec_driver_sql(
-                f"ALTER TABLE {TutorThread.__tablename__} "
-                "ADD COLUMN moves INTEGER DEFAULT 0")
-        conn.exec_driver_sql(
-            f"""CREATE TABLE IF NOT EXISTS {TutorPending.__tablename__} (
-                id INTEGER PRIMARY KEY,
-                student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
-                course_id VARCHAR(200) NOT NULL DEFAULT '',
-                problem_text TEXT DEFAULT '',
-                ts FLOAT NOT NULL DEFAULT 0)""")
-        conn.exec_driver_sql(
-            f"""CREATE TABLE IF NOT EXISTS {TutorRateHit.__tablename__} (
-                id INTEGER PRIMARY KEY,
-                student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
-                ts FLOAT NOT NULL DEFAULT 0)""")
+                f"""CREATE TABLE IF NOT EXISTS {TutorPending.__tablename__} (
+                    id INTEGER PRIMARY KEY,
+                    student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                    course_id VARCHAR(200) NOT NULL DEFAULT '',
+                    problem_text TEXT DEFAULT '',
+                    ts FLOAT NOT NULL DEFAULT 0)""")
+            conn.exec_driver_sql(
+                f"""CREATE TABLE IF NOT EXISTS {TutorRateHit.__tablename__} (
+                    id INTEGER PRIMARY KEY,
+                    student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                    ts FLOAT NOT NULL DEFAULT 0)""")
+    else:
+        # Postgres / Neon: ensure all added columns exist for existing databases.
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                f"ALTER TABLE {Publication.__tablename__} ADD COLUMN IF NOT EXISTS assigned_course VARCHAR(200) DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                f"ALTER TABLE {Submission.__tablename__} ADD COLUMN IF NOT EXISTS attempts_json TEXT DEFAULT '{{}}'"
+            )
+            conn.exec_driver_sql(
+                f"ALTER TABLE {TutorSession.__tablename__} ADD COLUMN IF NOT EXISTS task TEXT DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                f"ALTER TABLE {TutorEvent.__tablename__} ADD COLUMN IF NOT EXISTS tutor_reply TEXT DEFAULT ''"
+            )
+            conn.exec_driver_sql(
+                f"ALTER TABLE {Lesson.__tablename__} ADD COLUMN IF NOT EXISTS practice_json TEXT DEFAULT '{{}}'"
+            )
+            conn.exec_driver_sql(
+                f"ALTER TABLE {TutorThread.__tablename__} ADD COLUMN IF NOT EXISTS moves INTEGER DEFAULT 0"
+            )
 
 
 class ReviewRequest(Base):

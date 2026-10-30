@@ -106,7 +106,7 @@
   <select id="les-detail"><option value="brief">Brief</option><option value="standard" selected>Standard</option><option value="detailed">Detailed</option></select>
   <label class="check"><input type="checkbox" id="les-worked" checked style="width:auto"> Require worked examples</label>
   <div class="row" style="margin-top:10px"><button class="btn wide" id="genLessonBtn" onclick="genLesson()">📖 Generate Lesson</button></div>
-  <div class="row" style="margin-top:8px"><button class="btn small ghost" id="saveLessonBtn" onclick="saveLesson()">💾 Save Draft</button><button class="btn small ghost" id="approveLessonBtn" onclick="approveLesson()">✓ Approve</button></div>
+  <div class="row" style="margin-top:8px"><button class="btn small ghost" id="saveLessonBtn" onclick="saveLesson()">💾 Save Draft</button><button class="btn small ghost" id="approveLessonBtn" onclick="approveLesson()">✓ Approve</button><button class="btn small ghost" id="newLessonBtn" onclick="newBlankLesson()" title="Create an editable blank lesson without AI">✏️ New Blank</button></div>
   <div id="les-out" style="margin-top:8px"><p class="muted">No lesson draft yet.</p></div></section>
   <section class="card"><h3>📝 Assignment</h3>
   <label for="asg-count">Number of questions</label>
@@ -260,7 +260,24 @@ function renderLesson(){ const prev=document.getElementById('preview-lesson');
 function collectEdits(){ if(!LESSON) return;
  const t=document.getElementById('edit-title'); if(t) LESSON.title=t.value;
  document.querySelectorAll('.sec-body').forEach(el=>{ const i=parseInt(el.dataset.sec); if(LESSON.sections[i]) LESSON.sections[i].body_markdown=el.value; }); }
-async function saveLesson(){ if(!LESSON){ toast('Generate a lesson first.'); return; }
+function newBlankLesson(){
+ const top=(document.getElementById('les-topic').value||'Calculus Topic').trim();
+ LESSON={
+  title:top+' Lesson',
+  course:courseName(),
+  topic:top,
+  objectives:[(document.getElementById('les-objectives').value||'Understand key principles of '+top).trim()],
+  prerequisites:['Algebra'],
+  sections:[
+   {kind:'introduction',heading:'Introduction to '+top,body_markdown:'Welcome to this lesson on **'+top+'**. Review the definitions below.',math_latex:[],examples:[]},
+   {kind:'explanation',heading:'Key Concepts & Formulas',body_markdown:'Write your notes and explanations here. Use $...$ for inline math and $$...$$ for display equations.',math_latex:[],examples:[]}
+  ]
+ };
+ LESSON_ID=null; LESSON_STATUS='unsaved'; renderLesson(); showTab('lesson');
+ document.getElementById('les-out').innerHTML='<p class="muted">Blank lesson created. Edit sections on canvas, then click 💾 Save Draft.</p>';
+ toast('Blank lesson created — edit and save.');
+}
+async function saveLesson(){ if(!LESSON){ toast('Generate or create a blank lesson first.'); return; }
  collectEdits();
  try{ const r=await fetch('/api/lessons/save',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({id:LESSON_ID,course_id:courseId(),
@@ -268,7 +285,8 @@ async function saveLesson(){ if(!LESSON){ toast('Generate a lesson first.'); ret
   const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); return; }
   LESSON_ID=j.id; LESSON_STATUS=j.status; renderLesson();
   document.getElementById('les-out').innerHTML='<p class="muted">Draft saved (id '+j.id+'). You can Approve or Publish it.</p>';
- }catch(e){ toast('Request failed.'); } }
+  toast('Lesson saved as draft (id '+j.id+').');
+ }catch(e){ toast('Request failed: '+e); } }
 async function approveLesson(){
  if(!LESSON){ toast('No lesson on the canvas — generate one first.'); nudge('genLessonBtn'); return; }
  if(!LESSON_ID){ toast('Save the lesson draft first (💾 Save Draft).'); nudge('saveLessonBtn'); return; }

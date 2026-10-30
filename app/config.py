@@ -12,7 +12,12 @@ NEBIUS_SOCRATIC_MODEL = os.getenv(
     "NEBIUS_SOCRATIC_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
 )
 NEBIUS_BASE_URL = os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1")
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = (
+    os.getenv("DATABASE_URL")
+    or os.getenv("POSTGRES_URL")
+    or os.getenv("POSTGRES_PRISMA_URL")
+    or os.getenv("NEON_DATABASE_URL")
+)
 if not DATABASE_URL:
     if os.getenv("VERCEL"):
         DATABASE_URL = "sqlite:////tmp/mathpilot.db"

@@ -3417,10 +3417,10 @@ def api_lessons_save(payload: dict, db: Session = Depends(get_db),
     if course_id is not None:
         try:
             course_id = int(course_id)
+            if not db.get(Course, course_id):
+                course_id = None
         except (TypeError, ValueError):
-            raise HTTPException(400, "Invalid course_id")
-        if not db.get(Course, course_id):
-            raise HTTPException(400, "Course not found")
+            course_id = None
     lesson_id = payload.get("id")
     if lesson_id:
         lesson = db.get(Lesson, int(lesson_id))
@@ -3692,10 +3692,10 @@ def api_assignments_save(payload: dict, db: Session = Depends(get_db),
     if course_id is not None:
         try:
             course_id = int(course_id)
+            if not db.get(Course, course_id):
+                course_id = None
         except (TypeError, ValueError):
-            raise HTTPException(400, "Invalid course_id")
-        if not db.get(Course, course_id):
-            raise HTTPException(400, "Course not found")
+            course_id = None
     source_lesson_id = payload.get("source_lesson_id")
     if source_lesson_id is not None:
         try:
