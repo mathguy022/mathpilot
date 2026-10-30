@@ -7,18 +7,97 @@
       { left: "\\(", right: "\\)", display: false },
     ],
     throwOnError: false,
+    errorColor: "#cc0000",
     ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
   };
 
+  // Merge any separated <p>$$</p> ... <p>$$</p> blocks into a single display math block
+  function fixSplitMathParagraphs(root) {
+    if (!root || !root.querySelectorAll) return;
+    const paras = Array.from(root.querySelectorAll("p"));
+    for (let i = 0; i < paras.length; i++) {
+      const p = paras[i];
+      const text = (p.textContent || "").trim();
+      if (text === "$$" || text === "\\[") {
+        const closingDelim = text === "$$" ? "$$" : "\\]";
+        let j = i + 1;
+        const middle = [];
+        let found = false;
+        while (j < paras.length) {
+          const t2 = (paras[j].textContent || "").trim();
+          if (t2 === closingDelim) {
+            found = true;
+            break;
+          }
+          middle.push(paras[j]);
+          j++;
+        }
+        if (found) {
+          const combined = middle.map(el => (el.textContent || "").trim()).join(" ");
+          const div = document.createElement("div");
+          div.className = "math-block";
+          div.style.cssText = "margin:14px 0; text-align:center; overflow-x:auto;";
+          div.textContent = text + " " + combined + " " + closingDelim;
+          p.parentNode.insertBefore(div, p);
+          p.remove();
+          middle.forEach(el => el.remove());
+          paras[j].remove();
+          i = j;
+        }
+      }
+    }
+  }
+
+  // Clean empty lines inside $$ ... $$ blocks in text nodes so KaTeX does not encounter illegal \par
+  function cleanMathInDOM(root) {
+    if (!root || typeof document === "undefined" || !document.createTreeWalker) return;
+    try {
+      const walker = document.createTreeWalker(
+        root,
+        NodeFilter.SHOW_TEXT,
+        {
+          acceptNode: function (node) {
+            if (!node || !node.nodeValue) return NodeFilter.FILTER_REJECT;
+            const parent = node.parentElement;
+            if (parent && /^(script|style|textarea|code|pre|math-field)$/i.test(parent.tagName)) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            if (parent && parent.closest(".katex")) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            if (node.nodeValue.includes("$$") || node.nodeValue.includes("\\[")) {
+              return NodeFilter.FILTER_ACCEPT;
+            }
+            return NodeFilter.FILTER_REJECT;
+          }
+        }
+      );
+      const textNodes = [];
+      while (walker.nextNode()) textNodes.push(walker.currentNode);
+      textNodes.forEach(node => {
+        node.nodeValue = node.nodeValue
+          .replace(/\$\$([\s\S]*?)\$\$/g, function (_, inner) {
+            const clean = inner.replace(/^\s+|\s+$/g, "").replace(/\n\s*\n+/g, " ");
+            return "$$" + clean + "$$";
+          })
+          .replace(/\\\[([\s\S]*?)\\\]/g, function (_, inner) {
+            const clean = inner.replace(/^\s+|\s+$/g, "").replace(/\n\s*\n+/g, " ");
+            return "\\[" + clean + "\\]";
+          });
+      });
+    } catch (_) {}
+  }
+
   function renderMath(root) {
     if (!window.renderMathInElement) return;
-    renderMathInElement(root || document.body, OPTIONS);
+    const target = root || document.body;
+    fixSplitMathParagraphs(target);
+    cleanMathInDOM(target);
+    renderMathInElement(target, OPTIONS);
   }
   window.renderMath = renderMath; // call after inserting content manually
 
-  // Client mirror of the server's wrap_bare_latex(). The server only touches
-  // its own replies, so a student's message — "g(x) = \frac{x^2 - 9}{x - 3}"
-  // typed into the chat — reached the bubble as literal backslash code.
+  // Client mirror of the server's wrap_bare_latex().
   const LATEX_CMD = /\\[a-zA-Z]+/;
   const LATEX_RUN = /\\[a-zA-Z]+(?:\s*\{(?:[^{}]|\{[^{}]*\})*\}){0,2}/g;
   const DELIMITED = /(\$\$[\s\S]*?\$\$|\$[^$]*\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\))/g;
@@ -26,9 +105,6 @@
   const MATH_WORDS = /^(?:sin|cos|tan|cot|sec|csc|log|ln|lim|max|min|det|pi|theta|arcsin|arccos|arctan|sinh|cosh|tanh)$/i;
 
   function isMathLine(piece) {
-    // A line of working rather than a sentence about it: strip the commands
-    // and the operators, and call it math only if no prose word survives.
-    // Short tokens ("2t", "x2") are variables, not English.
     const prose = piece.replace(/\\[a-zA-Z]+/g, " ")
       .replace(/[{}()\[\]=+\-*/^.,;:<>!|_\\'"]/g, " ")
       .split(/\s+/)
@@ -41,13 +117,10 @@
     if (!LATEX_CMD.test(s)) return s;
     return s.split(DELIMITED).map(function (piece, i) {
       if (i % 2 || !LATEX_CMD.test(piece)) return piece; // already math
-      // A stray unbalanced $ would break the span, so only take the whole line
-      // when the dollar signs all sit inside already-delimited pieces.
       if (isMathLine(piece) && !piece.includes("$")) {
         const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(piece);
         return m[1] + "$" + m[2] + "$" + m[3];
       }
-      // Prose around the math: delimit each command run on its own.
       return piece.replace(LATEX_RUN, function (run) {
         return run.replace(/\s/g, "").length > 1 ? "$" + run + "$" : run;
       });
@@ -55,22 +128,48 @@
   }
   window.wrapBareLatex = wrapBareLatex;
 
-  // markdown-lite: the minimal subset lesson bodies actually use. Headings,
-  // **bold**, `code`, and "- " / "1. " lists become real HTML; $...$ spans are
-  // left alone so KaTeX can pick them up afterwards.
+  // markdown-lite: parses headings, bold, code, lists, and preserves display math blocks intact
   function renderMarkdownLite(src) {
-    let h = String(src == null ? "" : src)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    if (src == null) return "";
+    let h = String(src);
+
+    // 1. Extract and preserve display math blocks ($$...$$ and \[...\])
+    const mathBlocks = [];
+    h = h.replace(/\$\$([\s\S]*?)\$\$/g, function (_, inner) {
+      const clean = inner.replace(/^\s+|\s+$/g, "").replace(/\n\s*\n+/g, " ");
+      const idx = mathBlocks.length;
+      mathBlocks.push("$$" + clean + "$$");
+      return "\n\n___MATH_BLOCK_" + idx + "___\n\n";
+    });
+    h = h.replace(/\\\[([\s\S]*?)\\\]/g, function (_, inner) {
+      const clean = inner.replace(/^\s+|\s+$/g, "").replace(/\n\s*\n+/g, " ");
+      const idx = mathBlocks.length;
+      mathBlocks.push("\\[" + clean + "\\]");
+      return "\n\n___MATH_BLOCK_" + idx + "___\n\n";
+    });
+
+    // 2. Escape HTML
+    h = h.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    // 3. Inline markdown: bold and code
     h = h
       .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
       .replace(/`([^`]+)`/g, "<code>$1</code>");
+
+    // 4. Block formatting: lists, headings, math blocks, paragraphs
     let out = "";
     let inList = false;
     for (const line of h.split("\n")) {
       const t = line.trim();
+      const mathMatch = t.match(/^___MATH_BLOCK_(\d+)___$/);
       const item = t.match(/^(?:\d+[.)]|[-*])\s+(.*)$/);
       const head = t.match(/^(#{1,4})\s+(.*)$/);
-      if (item) {
+
+      if (mathMatch) {
+        if (inList) { out += "</ol>"; inList = false; }
+        const idx = parseInt(mathMatch[1], 10);
+        out += '<div class="math-block" style="margin:14px 0; text-align:center; overflow-x:auto;">' + mathBlocks[idx] + "</div>";
+      } else if (item) {
         if (!inList) { out += "<ol>"; inList = true; }
         out += "<li>" + item[1] + "</li>";
       } else {

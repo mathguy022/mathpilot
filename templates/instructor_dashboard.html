@@ -180,6 +180,8 @@ function toast(msg){ const t=document.createElement('div'); t.className='toast';
  document.body.appendChild(t); setTimeout(()=>t.remove(),4000); }
 function esc(s){ return String(s).replace(/</g,'&lt;'); }
 function asMath(s){ s=String(s==null?"":s).trim(); if(!s) return "";
+ s=s.replace(/\$\$([\s\S]*?)\$\$/g, (m, inner) => "$$" + inner.replace(/^\s+|\s+$/g, "").replace(/\n\s*\n+/g, " ") + "$$");
+ s=s.replace(/\\\[([\s\S]*?)\\\]/g, (m, inner) => "\\[" + inner.replace(/^\s+|\s+$/g, "").replace(/\n\s*\n+/g, " ") + "\\]");
  if(/\$|\\\(|\\\[/.test(s)) return s; return "$"+s+"$"; }
 function courseName(){ const el=document.getElementById('les-course');
  return el.options[el.selectedIndex]?el.options[el.selectedIndex].text:''; }

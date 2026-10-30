@@ -63,7 +63,7 @@ function mfVal(m){ let v=''; try{ v=m.getValue('latex')||m.value||''; }catch(e){
 function collect(){ const a={}; document.querySelectorAll('math-field[data-item]').forEach(m=>{ a[m.dataset.item]=mfVal(m); }); return a; }
 function restore(){ document.querySelectorAll('math-field[data-item]').forEach(m=>{ const v=SAVED[m.dataset.item]; if(v){ try{m.setValue(v);}catch(e){} } }); }
 function showQ(i){ document.querySelectorAll('.q-pane').forEach((p,j)=>{ p.style.display=(j===i)?'block':'none'; }); document.getElementById('q-nav').value=i; if(window.renderMath) window.renderMath(document.getElementById('q-'+i)); }
-function asMath(s){ s=String(s==null?"":s).trim(); if(!s) return ""; if(/\$|\\\(|\\\[/.test(s)) return s; return "$"+s+"$"; }
+function asMath(s){ s=String(s==null?"":s).trim(); if(!s) return ""; s=s.replace(/\$\$([\s\S]*?)\$\$/g, (m, inner) => "$$" + inner.replace(/^\s+|\s+$/g, "").replace(/\n\s*\n+/g, " ") + "$$").replace(/\\\[([\s\S]*?)\\\]/g, (m, inner) => "\\[" + inner.replace(/^\s+|\s+$/g, "").replace(/\n\s*\n+/g, " ") + "\\]"); if(/\$|\\\(|\\\[/.test(s)) return s; return "$"+s+"$"; }
 function fillPrompts(){ document.querySelectorAll('.q-prompt').forEach(el=>{ el.textContent=asMath(el.dataset.latex||''); }); }
 function setState(t){ const el=document.getElementById('save-state'); if(el) el.textContent=t; }
 function setFeedback(i, text, kind){
