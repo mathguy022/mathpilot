@@ -16,9 +16,14 @@ from datetime import datetime, timezone
 
 from .config import DATABASE_URL
 
-engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-)
+db_url = DATABASE_URL
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+if "sqlite" in db_url:
+    engine = create_engine(db_url, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
@@ -192,10 +197,11 @@ class Publication(Base):
 
 def ensure_schema():
     """Lightweight additive migration for existing SQLite databases.
-
-    create_all covers fresh installs; ALTER TABLE covers databases created
-    before a column/table existed. Additive only — never drops or renames.
+    Fresh Postgres databases have all tables created directly via Base.metadata.create_all.
+    Additive only — never drops or renames.
     """
+    if "sqlite" not in DATABASE_URL:
+        return
     with engine.begin() as conn:
         existing = {r[1] for r in conn.exec_driver_sql(
             f"PRAGMA table_info({Publication.__tablename__})")}

@@ -232,3 +232,5 @@ __marimo__/
 # Local-only copies and assistant tool settings (never shipped)
 MathPilot _last/
 .claude/
+.neon
+node_modules/
