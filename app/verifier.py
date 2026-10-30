@@ -44,6 +44,11 @@ _LATEX_CMDS = {
     r"\arcsin": "asin", r"\arccos": "acos", r"\arctan": "atan",
     r"\sin": "sin", r"\cos": "cos", r"\tan": "tan",
     r"\sec": "sec", r"\csc": "csc", r"\cot": "cot",
+    # \ln / \log / \exp are function names too: the generic unknown-command
+    # strip used to delete them, so "\ln(5x^2+1)" became "(5x^2+1)" and every
+    # log/exp derivative looked wrong.
+    r"\log": "log", r"\ln": "ln", r"\exp": "exp",
+    r"\sinh": "sinh", r"\cosh": "cosh", r"\tanh": "tanh",
     r"\theta": "theta", r"\phi": "phi", r"\alpha": "alpha",
     r"\beta": "beta", r"\gamma": "gamma", r"\lambda": "lambda_",
 }
@@ -74,6 +79,10 @@ def normalize_math(text: str) -> str:
         t = new
     for cmd, rep in _LATEX_CMDS.items():
         t = t.replace(cmd, rep)
+    # Logarithm bases: \log_2(x) -> log(x)/log(2). Without this the subscript
+    # survived as "log_2(x)" and every base-log problem failed to parse.
+    t = re.sub(r"\blog\s*_\s*\{?(\d+)\}?\s*\(([^()]*)\)",
+               r"(log(\2)/log(\1))", t)
     # Degrees: 30^\circ -> 30*(pi/180) so SymPy evaluates the angle; any
     # stray \circ (no preceding ^) is dropped rather than left as `^`.
     t = re.sub(r"\^\s*\\circ", "*(pi/180)", t)
@@ -107,6 +116,10 @@ def normalize_math(text: str) -> str:
     # bare trig/ln/log of a variable: cos x -> cos(x); ln x -> ln(x).
     # Skip names already followed by '(' (e.g. output of the power rule).
     # (?<![a-zA-Z]) not \b: the name may follow a digit ('3cos x').
+    # ln|f(x)| -> ln(Abs(f(x))): the bars belong to the argument, so this runs
+    # before the bars are read as standalone absolutes.
+    t = re.sub(r"\b(ln|log|sin|cos|tan|sec|csc|cot)\s*\|([^|]+)\|",
+               r"\1(Abs(\2))", t)
     t = re.sub(
         r"(?<![a-zA-Z])(sin|cos|tan|sec|csc|cot|asin|acos|atan|ln|log|exp|sqrt)"
         r"(?!\s*\()\s+([a-zA-Z][a-zA-Z0-9_]*)",
@@ -120,7 +133,10 @@ def normalize_math(text: str) -> str:
         r"\1(\2*\3)",
         t,
     )
-    # e^x stays exp-shaped; bare e (Euler) -> E for SymPy.
+    # Euler's number: insert the missing product first (6xe^{2x} -> 6x*e^{2x}),
+    # otherwise the 'e' glues onto the previous factor and becomes a symbol
+    # named "xe". Then bare e -> E for SymPy.
+    t = re.sub(r"([0-9a-zA-Z\)])\s*(e\s*\^)", r"\1*\2", t)
     t = re.sub(r"(?<![a-zA-Z])e(?![a-zA-Z0-9_(])", "E", t)
     # |x| -> Abs(x) (single pair only; nested bars stay unparseable).
     t = re.sub(r"\|([^|()=<>!]+)\|", r"Abs(\1)", t)
@@ -149,13 +165,34 @@ class Verdict:
     normalized: str = ""
 
 
+def _trim_tail_punctuation(text: str) -> str:
+    """Drop trailing math delimiters and sentence punctuation.
+
+    Prompt text often ends the math with a period or a closing '$'
+    ("... $\\lim_{x \\to 2} (3x^3 - 4x + 1)$."), which used to surface as an
+    "unexpected EOF" parse error rather than a wrong answer.
+    """
+    t = text.strip()
+    while True:
+        trimmed = re.sub(r"[\s$]+$", "", t)
+        trimmed = re.sub(r"[.,;:]+$", "", trimmed)
+        if trimmed == t:
+            return t
+        t = trimmed
+
+
 def _parse_single(text: str):
     text = text.strip()
     if len(text) > MAX_LEN or not text:
         raise ValueError("input too long or empty")
-    if "=" in text:  # compare RHS for equations like V = ...
-        text = text.split("=", 1)[1]
+    if "=" in text:
+        # Compare the right-hand side of an equation like V = ... . Chained
+        # equalities ("P(1) = 1 - 6 + 11 - 6 = 0") are common in worked steps
+        # and used to die on the leftover '=', so compare the last side.
+        sides = [p for p in text.split("=") if p.strip()]
+        text = sides[-1] if len(sides) > 1 else ""
     text = normalize_math(text)
+    text = _trim_tail_punctuation(text)
     if not text:
         raise ValueError("empty after normalization")
     if not _ALLOWED_RE.match(text):
@@ -718,6 +755,39 @@ def _solutions_to_set(solutions, syms: list) -> list | None:
     return [(r,) for r in rows]
 
 
+def _is_complex_value(value) -> bool:
+    """True when a parsed solution carries the imaginary unit."""
+    try:
+        return bool(sp.sympify(value).has(sp.I))
+    except Exception:
+        return False
+
+
+def _drop_complex_branches(expected: list, items: list) -> list:
+    """Ignore complex solution branches when the answer is real-valued.
+
+    solve(e^{2x} = 7) returns the real root plus a complex one, so a correct
+    real answer ("x = ln(7)/2") was rejected for "omitting" the complex branch.
+    """
+    try:
+        claimed = []
+        for item in items:
+            if isinstance(item, dict):
+                claimed.extend(item.values())
+            elif isinstance(item, (tuple, list)):
+                claimed.extend(item)
+            else:
+                claimed.append(item)
+        if any(_is_complex_value(v) for v in claimed):
+            return expected
+        real = [c for c in expected
+                if not any(_is_complex_value(v)
+                           for v in (c if isinstance(c, (tuple, list)) else [c]))]
+        return real or expected
+    except Exception:
+        return expected
+
+
 def _verify_equation(question, is_system: bool) -> Verdict:
     """Canonical equation check: solve prompt with SymPy, compare sets."""
     try:
@@ -744,6 +814,7 @@ def _verify_equation(question, is_system: bool) -> Verdict:
         return Verdict("unverifiable", f"Could not parse answer: {err}")
     if expected is None:
         return Verdict("unverifiable", "Solver returned no usable result.")
+    expected = _drop_complex_branches(expected, items)
     if not expected:
         # Canonical solution set is empty: no-solution (or 0=0 identity).
         # Any claimed solution is incorrect; only an explicit "no solution"
@@ -806,19 +877,128 @@ def _solution_matches(item, cand, syms: list) -> bool:
 
 
 def _parse_function_of_x(text: str):
-    """Parse prompt/answer text as f(x): strips 'f(x) =' / 'y =' prefixes."""
+    """Parse prompt/answer text as f(x): strips 'f(x) =' / "g'(t) =" prefixes."""
     t = text.strip()
-    t = re.sub(r"^[a-zA-Z]\s*\([a-zA-Z]\)\s*=", "", t).strip()
-    t = re.sub(r"^[a-zA-Z]\s*=", "", t).strip()
+    t = re.sub(r"^[a-zA-Z]'*\s*\(\s*[a-zA-Z]\s*\)\s*=", "", t).strip()
+    t = re.sub(r"^[a-zA-Z]'*\s*=", "", t).strip()
     expr = _parse_single(t)
     if isinstance(expr, tuple):
         raise ValueError("expected a single expression")
     return expr
 
 
+def _function_variable(*texts: str):
+    """The variable a function is defined in: "g(t) = ..." -> Symbol('t').
+
+    Derivative problems are not always in x. Differentiating g(t) with
+    respect to x gives 0 and made correct answers look wrong, so the
+    definition in the prompt decides the variable (defaults to x).
+    """
+    for text in texts:
+        m = re.search(r"\b([a-zA-Z])'*\s*\(\s*([a-zA-Z])\s*\)\s*=",
+                      text or "")
+        if m:
+            return sp.Symbol(m.group(2))
+    return sp.Symbol("x")
+
+
+def _derivative_value_verdict(question, f_expr, var):
+    """Check "find the value of f'(x) / f''(x) at x = a" style questions.
+
+    The answer to these is a number, not a derivative expression, so the
+    plain expression comparison rejected correct work. Returns None when the
+    question does not ask for a value at a point (the caller falls back).
+    """
+    prompt = str(question.prompt_latex or "")
+    point_m = re.search(
+        r"\b(?:at|when)\s+\$?%s\$?\s*=\s*([^$.,;]+)" % re.escape(str(var)),
+        prompt)
+    if not point_m:
+        return None
+    try:
+        point = _parse_single(point_m.group(1))
+        answer = _parse_single(question.final_answer_latex)
+    except Exception:
+        return None
+    # Only handle the numeric-answer form; an expression answer means the
+    # question really wants the derivative itself.
+    if getattr(point, "free_symbols", None) or getattr(
+            answer, "free_symbols", None):
+        return None
+    order = 1
+    pm = re.search(r"[a-zA-Z]\s*('{1,3})\s*\(", prompt)
+    if pm:
+        order = len(pm.group(1))
+    try:
+        expected = sp.diff(f_expr, var, order).subs(var, point)
+    except Exception:
+        return None
+    if _items_equal(answer, expected):
+        return Verdict(
+            "correct",
+            f"Matches the derivative evaluated at {var} = {point}.")
+    return Verdict(
+        "incorrect",
+        f"Does not match the derivative evaluated at {var} = {point}.")
+
+
+_INTEGRAL_HEAD_RE = re.compile(
+    r"\\int\s*(?P<bounds>(?:[_\^]\s*(?:\{[^{}]*\}|\\[a-zA-Z]+|[^\s{])){0,2})\s*"
+    r"(?P<body>.*?)\s*(?:\\[,;!]\s*)?d\s*(?P<var>[a-zA-Z])",
+    re.DOTALL)
+
+
+def _integral_spec(prompt: str):
+    """Split "\\int_{a}^{b} f(x) dx" into (lower, upper, body, variable).
+
+    The generic LaTeX normalizer strips \\int and turns "dx" into a symbol, so
+    integrals could never be verified at all. Bounds are None for an
+    indefinite integral.
+    """
+    m = _INTEGRAL_HEAD_RE.search(prompt or "")
+    if not m:
+        return None
+    bounds = m.group("bounds") or ""
+    body = (m.group("body") or "").strip()
+    if not body:
+        return None
+    lower = upper = None
+    for sign, braced, command, bare in re.findall(
+            r"([_\^])\s*(?:\{([^{}]*)\}|(\\[a-zA-Z]+)|([^\s{]))", bounds):
+        value = (braced or command or bare).strip()
+        if not value:
+            continue
+        if sign == "_":
+            lower = value
+        else:
+            upper = value
+    return lower, upper, body, m.group("var")
+
+
+def _defined_function(prompt: str):
+    """Return (variable, expression) from an explicit "g(t) = ..." in a prompt.
+
+    Prose prompts contain more than one '=' ("... $C(x) = ...$ ...
+    when $x = 50$"), and the generic parse took the last one, so the
+    function under study must be picked out explicitly.
+    """
+    for seg in _split_top_level(_math_only(prompt)):
+        seg = seg.strip().rstrip(".")
+        m = re.match(r"^[a-zA-Z]'*\s*\(\s*([a-zA-Z])\s*\)\s*=\s*(.+)$", seg)
+        if not m:
+            continue
+        try:
+            expr = _parse_single(m.group(2))
+        except Exception:
+            continue
+        if isinstance(expr, tuple):
+            continue
+        return sp.Symbol(m.group(1)), expr
+    return None
+
+
 def _verify_calculus(question, mode: str) -> Verdict:
     """Canonical calculus check: differentiate/integrate/limit via SymPy."""
-    x = sp.Symbol("x")
     try:
         if mode == "limit":
             m = _LIMIT_RE.search(question.prompt_latex.strip())
@@ -848,20 +1028,61 @@ def _verify_calculus(question, mode: str) -> Verdict:
                     if _items_equal(answer, expected)
                     else Verdict("incorrect",
                                  "Does not match the canonical limit."))
-        f_expr = _parse_function_of_x(question.prompt_latex)
-        g_expr = _parse_function_of_x(question.final_answer_latex)
         if mode == "deriv":
-            expected = sp.diff(f_expr, x)
+            defined = _defined_function(question.prompt_latex)
+            if defined is not None:
+                var, f_expr = defined
+            else:
+                # Derivative problems are not always in x ("g(t) = ..."); use
+                # the variable the prompt defines the function in.
+                var = _function_variable(question.prompt_latex,
+                                         question.final_answer_latex)
+                f_expr = _parse_function_of_x(question.prompt_latex)
+            g_expr = _parse_function_of_x(question.final_answer_latex)
+            at_point = _derivative_value_verdict(question, f_expr, var)
+            if at_point is not None:
+                return at_point
+            expected = sp.diff(f_expr, var)
             return (Verdict("correct", "Matches the canonical derivative.")
                     if _items_equal(g_expr, expected)
                     else Verdict("incorrect",
                                  "Does not match the canonical derivative."))
         if mode == "integ":
-            # Ignore +C: differentiate the ANSWER and compare to integrand.
-            diff = sp.simplify(sp.diff(g_expr, x) - f_expr)
-            if diff == 0:
-                return Verdict("correct",
-                               "Valid antiderivative (up to constant).")
+            spec = _integral_spec(question.prompt_latex)
+            if spec is not None:
+                lower, upper, body, ivar = spec
+                integrand = _parse_single(body)
+                ivar = sp.Symbol(ivar)
+            else:
+                # Prompt states the integrand as a definition ("f(x) = 2x")
+                # instead of an integral symbol; the old shape still works.
+                defined = _defined_function(question.prompt_latex)
+                if defined is None:
+                    return Verdict(
+                        "unverifiable",
+                        "Integral spec not in supported form "
+                        "(e.g. \\int_{0}^{1} x^2 \\, dx).")
+                ivar, integrand = defined
+                lower = upper = None
+            answered = _parse_function_of_x(question.final_answer_latex)
+            if lower is not None and upper is not None:
+                limits = (_parse_single(lower), _parse_single(upper))
+                expected = sp.integrate(integrand, (ivar, *limits))
+                return (Verdict("correct", "Matches the canonical integral.")
+                        if _items_equal(answered, expected)
+                        else Verdict("incorrect",
+                                     "Does not match the canonical integral."))
+            # Indefinite: ignore +C by differentiating the ANSWER. Abs(...) in
+            # an answer (ln|x|) differentiates to a sign-dependent form, so the
+            # positive branch is also tried — that is where the antiderivative
+            # is stated.
+            branches = [answered]
+            if answered.has(sp.Abs):
+                branches.append(answered.replace(sp.Abs, lambda z: z))
+            for branch in branches:
+                if sp.simplify(sp.diff(branch, ivar) - integrand) == 0:
+                    return Verdict("correct",
+                                   "Valid antiderivative (up to constant).")
             return Verdict("incorrect",
                            "Derivative of answer does not match integrand.")
     except Exception as exc:
@@ -924,16 +1145,20 @@ def verify_canonical(question) -> Verdict:
         return _verify_calculus(question, mode)
     if mode == "simplify":
         sv = _verify_simplify(question)
-        if sv.status in ("correct", "incorrect"):
+        if sv.status == "correct":
             return sv
-        # Mis-tagged solve/equation word problem (trig "power function" tags
-        # route here): try the canonical equation solver before giving up.
+        # Mis-tagged solve/equation word problem (log/exp tags route here):
+        # the canonical equation solver is the authority when it can decide.
         try:
             eq = _verify_equation(question, is_system=False)
-            if eq.status in ("correct", "incorrect"):
-                return eq
         except Exception:
-            pass
+            eq = None
+        if eq is not None and eq.status == "correct":
+            return eq
+        if sv.status == "incorrect":
+            return sv
+        if eq is not None and eq.status == "incorrect":
+            return eq
         return sv
     # Default for unknown/untagged topics: try the equation solver first
     # (handles bare 'x+1=2' prompts with no tags), then fall back to the

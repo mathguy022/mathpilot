@@ -1,5 +1,56 @@
 """Verifier tests: correct / incorrect / equivalent / unsafe / unverifiable."""
+from app.schemas import check_step_parseable
 from app.verifier import check_equivalent, check_factored, check_numeric
+
+
+def test_chained_equality_step_parses():
+    # Worked steps often chain equalities; the leftover '=' used to make the
+    # whole step (and the candidate question) unparseable.
+    assert check_step_parseable("P(1) = 1 - 6 + 11 - 6 = 0") is None
+    assert check_step_parseable("x = 2y = 8") is None
+
+
+def test_trailing_sentence_period_ignored():
+    assert check_equivalent("x^2.", "x^2").status == "correct"
+
+
+def test_derivative_in_non_x_variable_verifies():
+    # "g(t) = ...": differentiating with respect to x gave 0 and rejected a
+    # correct answer, which is one reason runs delivered fewer items than asked.
+    from app.schemas import Question, QuestionStep
+    from app.verifier import verify_canonical
+
+    q = Question(
+        prompt_latex="Find the derivative of $g(t) = t^5 - 4t^3 + 2t - 9$.",
+        final_answer_latex="g'(t) = 5t^4 - 12t^2 + 2",
+        difficulty=3,
+        steps=[QuestionStep(step_id="s1", description="Differentiate.",
+                            expected_input_latex="5t^4 - 12t^2 + 2",
+                            objective_tags=["derivative"])],
+    )
+    assert verify_canonical(q).status == "correct"
+
+
+def test_derivative_value_at_a_point_verifies():
+    # "find the marginal cost when x = 50": the answer is a number, so the
+    # derivative-expression comparison alone rejected correct work.
+    from app.schemas import Question, QuestionStep
+    from app.verifier import verify_canonical
+
+    def q(answer):
+        return Question(
+            prompt_latex=(
+                "If $C(x) = 0.01x^3 - 0.6x^2 + 15x$ represents the cost of "
+                "producing $x$ items, find the marginal cost when $x = 50$."),
+            final_answer_latex=answer,
+            difficulty=3,
+            steps=[QuestionStep(step_id="s1", description="Evaluate.",
+                                expected_input_latex=answer,
+                                objective_tags=["derivative"])],
+        )
+
+    assert verify_canonical(q("30")).status == "correct"
+    assert verify_canonical(q("45")).status == "incorrect"
 
 
 def test_correct_exact():

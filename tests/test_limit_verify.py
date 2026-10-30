@@ -44,3 +44,12 @@ def test_wrong_limit_answer_rejected():
     q = _limit_q("Evaluate: $$\\lim_{x \\to 2} "
                  "\\frac{x^2-4}{x-2}$$", "5")
     assert verify_canonical(q).status == "incorrect"
+
+
+def test_limit_prompt_ending_in_period_verifies():
+    # Prompt prose often closes the sentence right after the math
+    # ("... (3x^3 - 4x + 1)$."); the trailing "$." used to fail parsing and
+    # discard an otherwise-correct generated question.
+    q = _limit_q("Evaluate the limit: $\\lim_{x \\to 2} "
+                 "(3x^3 - 4x + 1)$.", "17")
+    assert verify_canonical(q).status == "correct"
