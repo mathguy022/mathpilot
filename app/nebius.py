@@ -34,10 +34,10 @@ def _chat(model: str, messages: list[dict], max_tokens: int = 400,
         data = resp.json()
     try:
         choice = data["choices"][0]["message"]
-        # Some reasoning models put text in `reasoning_content`, keep final `content`.
+        # Some reasoning models put text in `reasoning_content` or `reasoning`, keep final `content`.
         content = choice.get("content") or ""
-        if not content.strip() and choice.get("reasoning_content"):
-            content = choice["reasoning_content"]
+        if not content.strip():
+            content = choice.get("reasoning_content") or choice.get("reasoning") or ""
         content = content.strip()
         if not content:
             raise ValueError("empty model reply")

@@ -7,9 +7,9 @@ from dotenv import load_dotenv
 load_dotenv()  # loads .env (gitignored) for local runs; real env vars take precedence
 
 NEBIUS_API_KEY = os.getenv("NEBIUS_API_KEY", "")
-NEBIUS_MATH_MODEL = os.getenv("NEBIUS_MATH_MODEL", "Qwen/Qwen3.5-122B-A10B-FP8")
+NEBIUS_MATH_MODEL = os.getenv("NEBIUS_MATH_MODEL", "Qwen/Qwen3-235B-A22B-Instruct-2507")
 NEBIUS_SOCRATIC_MODEL = os.getenv(
-    "NEBIUS_SOCRATIC_MODEL", "nvidia/nemotron-3-nano-30b-a3b"
+    "NEBIUS_SOCRATIC_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
 )
 NEBIUS_BASE_URL = os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1")
 DATABASE_URL = os.getenv("DATABASE_URL")
