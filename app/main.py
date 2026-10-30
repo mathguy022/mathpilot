@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -16,9 +17,10 @@ from . import config
 from . import auth
 from .db import (
     Assignment, ensure_schema, get_db, init_db, Activity, Attempt, Course, CourseMaterial,
-    HintRequest, Lesson, Mastery, Publication, PracticeProgress, ReviewRequest,
+    HintRequest, Lesson, Publication, PracticeProgress, ReviewRequest,
     SharedFile, Submission,
-    TutorEvent, TutorSession, User, utcnow,
+    TutorEvent, TutorPending, TutorRateHit, TutorSession, TutorThread, User,
+    utcnow,
 )
 from .seed import seed
 from .tutor import orchestrate
@@ -47,15 +49,61 @@ init_db()
 ensure_schema()
 seed()
 
-DEMO_HISTORY: dict[str, list[dict]] = {}
+class TutorThreadState:
+    """One tutor thread read out of SQLite: its transcript and its ladder.
 
-# Per practice item: hint rung reached and misses so far. In-memory like
-# DEMO_HISTORY, so the ladder is server-owned rather than client-supplied.
-PRACTICE_STATE: dict[str, dict] = {}
+    This replaces the process-memory dicts the MVP ran on. A thread key always
+    names one student, so one row is one student's conversation and a restart
+    or a second worker can neither hand back a spent hint budget nor answer as
+    though the student had never spoken. Mutate `state` or `messages`, then
+    save() once the turn is settled; they are the same dict/list views a turn
+    always worked with, written through to the row on save.
+    """
 
-# Mock lesson store: UUID -> {"plan": LessonPlan dict, "activity_ids": [int]}.
-# Demo only: in-memory, cleared on restart, synthetic content only.
-LESSON_LINKS: dict[str, dict] = {}
+    KEEP_MESSAGES = 40  # how much of a thread the server remembers
+
+    def __init__(self, db: Session, key: str):
+        self._db = db
+        self._key = key
+        self._row = self._load()
+        try:
+            self.messages = json.loads(self._row.messages_json or "[]")
+        except Exception:
+            self.messages = []
+        self.state = {"hints": self._row.hints or 0,
+                      "misses": self._row.misses or 0,
+                      "unreadable": self._row.unreadable or 0,
+                      "moves": self._row.moves or 0}
+
+    def _load(self) -> TutorThread:
+        row = self._db.query(TutorThread).filter(
+            TutorThread.key == self._key).first()
+        if row:
+            return row
+        row = TutorThread(key=self._key, messages_json="[]")
+        self._db.add(row)
+        self._db.flush()
+        return row
+
+    def append(self, user_text: str, reply: str) -> None:
+        """Log one finished turn, which is all a reply ever adds."""
+        self.messages.append({"role": "user", "content": user_text})
+        self.messages.append({"role": "assistant", "content": reply})
+
+    def save(self) -> None:
+        self._row.messages_json = json.dumps(
+            self.messages[-self.KEEP_MESSAGES:])
+        self._row.hints = int(self.state.get("hints", 0) or 0)
+        self._row.misses = int(self.state.get("misses", 0) or 0)
+        self._row.unreadable = int(self.state.get("unreadable", 0) or 0)
+        self._row.moves = int(self.state.get("moves", 0) or 0)
+        self._row.updated_at = utcnow()
+        self._db.commit()
+
+
+def _thread(db: Session, key: str) -> TutorThreadState:
+    return TutorThreadState(db, key)
+
 
 
 def steps_of(activity: Activity) -> list[dict]:
@@ -72,27 +120,39 @@ def hints_of(activity: Activity) -> list[str]:
         return []
 
 
+def _viewer_id(request: Request, db: Session) -> int:
+    """Whose rows this request may read and write.
+
+    Always resolved from the signed-in viewer's database row, never from a
+    cookie body or a client-supplied field. With no cookie it falls back to
+    the demo roster's first student.
+    """
+    return auth.viewer_or_demo_student(request, db).id
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, db: Session = Depends(get_db)):
+    uid = _viewer_id(request, db)
     pubs = db.query(Publication).order_by(Publication.id.desc()).all()
-    lesson_cards, asg_cards = _student_cards(db, pubs)
+    lesson_cards, asg_cards = _student_cards(db, pubs, uid)
     completed = db.query(Submission).filter(
-        Submission.user_id == 1,
+        Submission.user_id == uid,
         Submission.status == "submitted").count()
     in_progress = db.query(Submission).filter(
-        Submission.user_id == 1,
+        Submission.user_id == uid,
         Submission.status == "draft").count()
     return templates.TemplateResponse(request, "home.html", {
         "request": request,
         "lesson_cards": lesson_cards, "assignment_cards": asg_cards,
         "n_lessons": len(lesson_cards), "n_pending": len(asg_cards),
         "n_completed": completed, "n_in_progress": in_progress,
+        "first_name": _student_first_name(db, uid),
         "demo": not config.ai_configured(),
     })
 
 
-def _student_cards(db: Session, pubs: list) -> tuple[list, list]:
-    """Build lesson + assignment cards for the student workspace.
+def _student_cards(db: Session, pubs: list, user_id: int) -> tuple[list, list]:
+    """Build lesson + assignment cards for one student's workspace.
 
     Shared by the dashboard and the My Lessons/My Assignments pages so all
     three views show the same packages. Lessons list every publication
@@ -102,14 +162,15 @@ def _student_cards(db: Session, pubs: list) -> tuple[list, list]:
     import json as _json
 
     lessons, assignments = [], []
+    instructor_name = _instructor_name(db)
     for p in pubs:
         if p.lesson_id:
             lesson = db.get(Lesson, p.lesson_id)
             lessons.append({
                 "link_id": p.link_id,
                 "title": (lesson.title if lesson else None) or p.title or "Untitled",
-                "course": p.assigned_course or "",
-                "instructor": "Dr. Lee",
+                "course": p.assigned_course or _lesson_course_title(db, lesson),
+                "instructor": instructor_name,
                 "status": "Available",
                 "due": p.due_date or "",
             })
@@ -122,7 +183,7 @@ def _student_cards(db: Session, pubs: list) -> tuple[list, list]:
                 n_q = 0
             sub = db.query(Submission).filter(
                 Submission.publication_id == p.id,
-                Submission.user_id == 1).first()
+                Submission.user_id == user_id).first()
             status = ("Submitted" if sub and sub.status == "submitted"
                       else ("In Progress" if sub else "Not Started"))
             assignments.append({
@@ -137,11 +198,20 @@ def _student_cards(db: Session, pubs: list) -> tuple[list, list]:
 
 
 PRACTICE_TARGET_ITEMS = 5
+# How long to leave a lesson's item set alone after a top-up attempt.
+PRACTICE_TOPUP_COOLDOWN_S = 6 * 3600
 
 
 def _lesson_course_title(db: Session, lesson: Lesson) -> str:
     course = db.get(Course, lesson.course_id) if lesson.course_id else None
     return (course.title if course else "") or ""
+
+
+def _instructor_name(db: Session) -> str:
+    """The roster's instructor, for the attribution shown on student cards."""
+    teacher = db.query(User).filter(User.role == "instructor").order_by(
+        User.id).first()
+    return teacher.name if teacher else "Instructor"
 
 
 def _practice_options(db: Session) -> list:
@@ -215,7 +285,29 @@ def _practice_lesson(db: Session, ref: str) -> Lesson:
     return lesson
 
 
+def _practice_json(lesson: Lesson) -> dict:
+    """The whole practice cache as stored on the lesson (items, answers,
+    plans, and the top-up marker). Read it, change the keys you want, write
+    the dict back — never replace it, or a top-up would erase the plans."""
+    import json as _json
+
+    try:
+        cache = _json.loads(lesson.practice_json or "{}")
+    except Exception:
+        cache = {}
+    return cache if isinstance(cache, dict) else {}
+
+
 def _practice_cache(lesson: Lesson) -> tuple:
+    cache = _practice_json(lesson)
+    items = cache.get("items") or []
+    answers = cache.get("answers") or {}
+    return (items if isinstance(items, list) else [],
+            answers if isinstance(answers, dict) else {})
+
+
+def _practice_plans(lesson: Lesson) -> dict:
+    """Cached step plans for this lesson's practice items, keyed by item id."""
     import json as _json
 
     try:
@@ -224,34 +316,103 @@ def _practice_cache(lesson: Lesson) -> tuple:
         cache = {}
     if not isinstance(cache, dict):
         cache = {}
-    items = cache.get("items") or []
-    answers = cache.get("answers") or {}
-    return (items if isinstance(items, list) else [],
-            answers if isinstance(answers, dict) else {})
+    plans = cache.get("plans") or {}
+    return plans if isinstance(plans, dict) else {}
 
 
-def _practice_set(db: Session, lesson: Lesson) -> dict:
+def _practice_plan(db: Session, lesson: Lesson, item: dict) -> list[dict]:
+    """The verified step plan for one practice item.
+
+    The deterministic templates cover the algebra. The model covers the
+    questions they cannot express (find the domain, which quadrant, what
+    transformation). Its plan is validated and then kept on the lesson, so
+    an item is planned once rather than on every visit.
+    """
+    import json as _json
+
+    from . import float_plan as _planmod
+
+    item_id = str(item.get("item_id") or "")
+    prompt = str(item.get("prompt_latex") or "")
+    task = str(item.get("task") or "")
+    plan, _src = _planmod.build_plan(prompt, allow_llm=False, task=task)
+    if plan:
+        return plan
+    cached = _practice_plans(lesson).get(item_id)
+    if isinstance(cached, list) and cached:
+        return cached
+    if not config.ai_configured():
+        return []
+    plan, _src = _planmod.build_plan(prompt, allow_llm=True, task=task)
+    if not plan:
+        return []
+    try:
+        cache = _json.loads(lesson.practice_json or "{}")
+    except Exception:
+        cache = {}
+    if not isinstance(cache, dict):
+        cache = {}
+    cache.setdefault("plans", {})[item_id] = plan
+    lesson.practice_json = _json.dumps(cache)
+    db.commit()
+    return plan
+
+
+def _practice_topup_cooling(lesson: Lesson) -> bool:
+    """Did a top-up attempt for this lesson just happen?
+
+    See the note in _practice_set: for a lesson whose items are conceptual the
+    attempt always fails, and repeating it on every request is what makes the
+    tutor look dead. The window is long enough to stop the thrash and short
+    enough that an instructor who edits the lesson gets a fresh try.
+    """
+    tried = _practice_json(lesson).get("topup_tried_at")
+    try:
+        return time.time() - float(tried) < PRACTICE_TOPUP_COOLDOWN_S
+    except (TypeError, ValueError):
+        return False
+
+
+def _practice_set(db: Session, lesson: Lesson, top_up: bool = True) -> dict:
     """Practice items for a lesson: its own guided items first, then verified
     generated questions up to PRACTICE_TARGET_ITEMS.
 
     Generated items are cached on the lesson, so the AI call happens once per
     lesson rather than on every student visit. Answers stay server-side; only
     prompts and hints reach the student.
+
+    `top_up` is False for the routes that only look one item up (the tutor and
+    the checker): they already know the item id, and a generation round costs
+    ~15 seconds of model time that the student is waiting through.
     """
     import json as _json
 
-    from .lessons import split_student_payload
+    from .lessons import split_student_payload, _practice_task_texts
 
     try:
         content = split_student_payload(_json.loads(
             lesson.student_content_json or "{}"))
     except Exception:
         content = {}
+    # The task text comes from the practice section's numbered questions. It
+    # is recomputed here rather than only at derivation time, so lessons
+    # stored before the task existed pick it up without a migration.
+    tasks: list[str] = []
+    guided_items = content.get("guided_items", []) or []
+    for sec in content.get("sections", []) or []:
+        if isinstance(sec, dict) and sec.get("kind") == "practice":
+            tasks = _practice_task_texts(
+                str(sec.get("body_markdown") or ""),
+                [str(g.get("prompt_latex") or "") for g in guided_items
+                 if isinstance(g, dict)])
+            break
     items = []
     answers: dict = {}
-    for g in content.get("guided_items", []) or []:
+    for i, g in enumerate(guided_items):
         items.append({"item_id": g.get("item_id", ""),
                       "prompt_latex": g.get("prompt_latex", ""),
+                      "task": g.get("task") or (tasks[i] if i < len(tasks)
+                                                else ""),
                       "context": g.get("context", "Guided practice"),
                       "hints_enabled": g.get("hints_enabled", True),
                       "source": "lesson"})
@@ -262,31 +423,43 @@ def _practice_set(db: Session, lesson: Lesson) -> dict:
             continue
         items.append({"item_id": c["item_id"],
                       "prompt_latex": c.get("prompt_latex", ""),
+                      # A generated question is its own task: the prompt
+                      # states what is being asked.
+                      "task": str(c.get("prompt_latex", "") or ""),
                       "context": c.get("context", "Extra practice"),
                       "hints": [str(h) for h in (c.get("hints") or []) if h],
                       "hints_enabled": True,
                       "source": "generated"})
         answers[c["item_id"]] = str(c.get("answer", ""))
     shortfall = PRACTICE_TARGET_ITEMS - len(items)
-    if shortfall > 0 and config.ai_configured():
+    if (top_up and shortfall > 0 and config.ai_configured()
+            and not _practice_topup_cooling(lesson)):
         generated = _practice_generate(lesson, shortfall, items)
+        cache = _practice_json(lesson)
+        # Record the attempt even when it produced nothing. A lesson of
+        # conceptual questions ("classify the discontinuity") can never pass
+        # the SymPy gate, so the shortfall stays open forever and every page
+        # load would otherwise pay ~15 seconds of model time for a set that
+        # cannot grow.
+        cache["topup_tried_at"] = int(time.time())
         if generated:
             cached_items, cached_answers = _practice_cache(lesson)
-            new_items = cached_items + generated
             merged_answers = dict(cached_answers)
             for q in generated:
                 merged_answers[q["item_id"]] = q["answer"]
-            lesson.practice_json = _json.dumps(
-                {"items": new_items, "answers": merged_answers})
-            db.commit()
-            for q in generated:
-                answers[q["item_id"]] = q["answer"]
-                items.append({"item_id": q["item_id"],
-                              "prompt_latex": q["prompt_latex"],
-                              "context": q["context"],
-                              "hints": list(q.get("hints") or []),
-                              "hints_enabled": True,
-                              "source": "generated"})
+            cache["items"] = cached_items + generated
+            cache["answers"] = merged_answers
+        lesson.practice_json = _json.dumps(cache)
+        db.commit()
+        for q in (generated or []):
+            answers[q["item_id"]] = q["answer"]
+            items.append({"item_id": q["item_id"],
+                          "prompt_latex": q["prompt_latex"],
+                          "task": str(q.get("prompt_latex", "") or ""),
+                          "context": q["context"],
+                          "hints": list(q.get("hints") or []),
+                          "hints_enabled": True,
+                          "source": "generated"})
     return {"items": items, "answers": answers,
             "title": content.get("title") or lesson.title,
             "topic": content.get("topic") or lesson.topic,
@@ -354,17 +527,20 @@ def practice_page(request: Request, topic: str = "", db: Session = Depends(get_d
         # widget hides there (per spec) and the thread below keeps both
         # surfaces on one conversation.
         "hide_float_tutor": True,
-        "float_thread": _float_thread_payload(db, 1, "default"),
+        "float_thread": _float_thread_payload(db, _viewer_id(request, db),
+                                              "default"),
     })
 
 
 @app.post("/api/practice/items")
-def api_practice_items(payload: dict, db: Session = Depends(get_db)):
+def api_practice_items(request: Request, payload: dict,
+                       db: Session = Depends(get_db)):
     """Practice items for a package: guided lesson items, topped up to five.
 
     Answers never leave the server; they are resolved again inside
     /api/practice/attempt when a step is graded.
     """
+    uid = _viewer_id(request, db)
     ref = str(payload.get("ref", "") or "").strip()
     lesson = _practice_lesson(db, ref)
     packed = _practice_set(db, lesson)
@@ -372,11 +548,12 @@ def api_practice_items(payload: dict, db: Session = Depends(get_db)):
             "topic": packed["topic"], "course": packed["course"],
             "target": PRACTICE_TARGET_ITEMS,
             "hint_budget": PRACTICE_HINT_BUDGET,
-            "progress": _practice_progress_map(db, ref)}
+            "progress": _practice_progress_map(db, ref, uid)}
 
 
 @app.post("/api/practice/progress")
-def api_practice_progress(payload: dict, db: Session = Depends(get_db)):
+def api_practice_progress(request: Request, payload: dict,
+                          db: Session = Depends(get_db)):
     """Save the student's place in a practice package (draft text, skip).
 
     Ungraded and never surfaced as a score; it only restores where they were.
@@ -386,7 +563,7 @@ def api_practice_progress(payload: dict, db: Session = Depends(get_db)):
     if not item_id:
         raise HTTPException(400, "item_id is required")
     _practice_lesson(db, ref)
-    row = _practice_progress_row(db, ref, item_id)
+    row = _practice_progress_row(db, ref, item_id, _viewer_id(request, db))
     status = str(payload.get("status", "") or "")
     if status in ("started", "solved", "skipped"):
         row.status = status
@@ -412,6 +589,16 @@ PRACTICE_MICRO_STEPS = (
     "Copy the item, then underline the one part you can act on first.",
     "Make a single change, then stop and compare it with the item.",
 )
+
+# Words that appear in almost any tutoring sentence, so they carry no evidence
+# that a reply is about the method the verified plan actually uses.
+PLAN_FILLER = frozenset({
+    "that", "this", "then", "with", "from", "into", "your", "what", "when",
+    "each", "them", "they", "have", "must", "only", "just", "will", "would",
+    "should", "there", "their", "which", "where", "first", "next", "start",
+    "item", "problem", "question", "answer", "step", "steps", "move", "moves",
+    "line", "write", "send", "look", "think", "want", "wants", "need",
+})
 
 
 def _practice_say(*, user_text: str, history: list[dict], course_ref: str,
@@ -441,13 +628,17 @@ def _practice_say(*, user_text: str, history: list[dict], course_ref: str,
                       validate=safe)
     if not out:
         return _float_display(fallback)
-    text = out[0]
+    # The panel prints its own "Step N:" and "Hint N —" labels, so a model that
+    # copies one out of the transcript shows the student two labels — live
+    # failure: "Hint 1 — Hint 2 (of 3): …", with a rung number that disagreed
+    # with the ladder the student was actually on.
+    text = _model_body(out[0])
     # Regeneration gets two tries; the gate is the last word, so a reply that
     # still runs long, spoils the answer, or copies the student's numbers is
     # replaced by the scripted line rather than censored mid-sentence.
     if _chat._too_long(text):
         return _float_display(fallback)
-    if not safe(text):
+    if not text.strip() or not safe(text):
         return _float_display(fallback)
     return _float_display(text)
 
@@ -512,40 +703,44 @@ def _guided_expected_latex(lesson: Lesson, item_id: str) -> str:
 PRACTICE_HINT_BUDGET = 3
 
 
-def _practice_progress_map(db: Session, ref: str) -> dict:
+def _practice_progress_map(db: Session, ref: str, user_id: int) -> dict:
     rows = db.query(PracticeProgress).filter(
-        PracticeProgress.user_id == 1,
+        PracticeProgress.user_id == user_id,
         PracticeProgress.package_ref == ref).all()
     return {r.item_id: {"status": r.status, "tries": r.tries or 0,
                         "hints": r.hints or 0, "draft": r.draft or ""}
             for r in rows}
 
 
-def _practice_progress_get(db: Session, ref: str, item_id: str):
+def _practice_progress_get(db: Session, ref: str, item_id: str,
+                           user_id: int):
     """Read the saved row without creating one (the write path owns creation)."""
     return db.query(PracticeProgress).filter(
-        PracticeProgress.user_id == 1,
+        PracticeProgress.user_id == user_id,
         PracticeProgress.package_ref == ref,
         PracticeProgress.item_id == item_id).first()
 
 
-def _practice_progress_row(db: Session, ref: str, item_id: str):
-    row = _practice_progress_get(db, ref, item_id)
+def _practice_progress_row(db: Session, ref: str, item_id: str,
+                           user_id: int):
+    row = _practice_progress_get(db, ref, item_id, user_id)
     if not row:
-        row = PracticeProgress(user_id=1, package_ref=ref, item_id=item_id)
+        row = PracticeProgress(user_id=user_id, package_ref=ref,
+                               item_id=item_id)
         db.add(row)
         db.commit()
     return row
 
 
 def _practice_progress_record(db: Session, ref: str, item_id: str,
-                              verdict: str, hint_level=None) -> None:
+                              verdict: str, user_id: int,
+                              hint_level=None) -> None:
     """Fold one tutor turn into the student's saved place.
 
     Counters live here, not in the browser, so a reload cannot reset a try or
     a hint that was already spent.
     """
-    row = _practice_progress_row(db, ref, item_id)
+    row = _practice_progress_row(db, ref, item_id, user_id)
     if verdict == "correct":
         row.tries = (row.tries or 0) + 1
         row.status = "solved"
@@ -559,7 +754,8 @@ def _practice_progress_record(db: Session, ref: str, item_id: str,
 
 
 @app.post("/api/practice/attempt")
-def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
+def api_practice_attempt(request: Request, payload: dict,
+                         db: Session = Depends(get_db)):
     """Chat with the tutor about one practice item.
 
     Same pipeline as the floating widget: the intent router decides whether a
@@ -571,6 +767,7 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
     from . import float_intent as _intent
     from .verifier import MAX_LEN
 
+    uid = _viewer_id(request, db)
     ref = str(payload.get("ref", "") or "").strip()
     item_id = str(payload.get("item_id", "") or "").strip()
     student = str(payload.get("response", ""))[:MAX_LEN].strip()
@@ -580,27 +777,104 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
                          "hint, explain, or walk it step by step.",
                 "replyType": "bubble", "hintLevel": 0, "revealed": False}
     lesson = _practice_lesson(db, ref)
-    packed = _practice_set(db, lesson)
+    # The item is already chosen, so this is a lookup: no generation round.
+    packed = _practice_set(db, lesson, top_up=False)
     items_by_id = {i.get("item_id"): i for i in packed["items"]}
     if item_id not in items_by_id:
         raise HTTPException(404, "Practice item not found")
     item = items_by_id[item_id]
     prompt = str(item.get("prompt_latex", "") or "").strip()
+    task = str(item.get("task") or "").strip()
     expected = (str(packed["answers"].get(item_id) or "")
                 if item.get("source") == "generated"
                 else _guided_expected_latex(lesson, item_id))
     course_ref = str(payload.get("course", "") or packed["course"] or "")
-    key = f"practice:{ref}:{item_id}"
-    state = PRACTICE_STATE.setdefault(key, {"hints": 0, "misses": 0})
-    history = DEMO_HISTORY.setdefault(key, [])
-    saved = _practice_progress_get(db, ref, item_id)
+    key = f"practice:{ref}:{item_id}:u{uid}"
+    thread = _thread(db, key)
+    state = thread.state      # ladder for this item, stored per student
+    history = thread.messages  # the transcript this item has built up
+    saved = _practice_progress_get(db, ref, item_id, uid)
     if saved:
         # A reload must not hand the student a fresh hint budget.
         state["hints"] = max(state["hints"], saved.hints or 0)
-    item_line = f"The open practice item is: {prompt}" if prompt else ""
+    # The task says what the student was asked to do with the expression.
+    # Without it the tutor answers a different question than the one set.
+    item_line = (f"The open practice item is: {task or prompt}"
+                 if (task or prompt) else "")
     # What the reply must not say, derived by SymPy rather than by the model.
     from .verifier import canonical_answer as _canonical_answer
     answers = _canonical_answer(prompt or expected)
+    # Ground the wording in the same verified path step mode walks, else the
+    # model improvises a method that dead-ends (linear moves on a quadratic).
+    # Instructions only: the results stay in `answers`, i.e. banned.
+    from . import float_plan as _planmod
+    plan = _practice_plan(db, lesson, item)
+    plan_line = ""
+    if plan:
+        plan_line = ("Verified solution path, instructions only: "
+                     + " | ".join(str(s.get("instruction", "")) for s in plan))
+
+    def _instr(i: int) -> str:
+        return str(plan[i].get("instruction", "")).strip().rstrip(".")
+
+    def _move(idx: int) -> str:
+        return (f"Step {idx + 1} of {len(plan)}: {_instr(idx)}. "
+                "Write just that line — what do you get?")
+
+    def _on_method(text: str, idx: int) -> bool:
+        """True when `text` is worded in the vocabulary of plan step `idx`.
+
+        The model only words a reply, and it sometimes words a different
+        method — a live failure gave a linear "balance both sides" hint on a
+        factoring item, which sends the student down a dead end. The expected
+        expression is deliberately not part of the vocabulary: a hint must
+        never have to name the result to count as on-method.
+        """
+        import re as _re
+
+        step = plan[idx]
+        bits = [str(step.get("instruction", "")), str(step.get("reason", ""))]
+        bits += [str(m) for m in (step.get("micro_steps") or [])]
+        pool = {w for w in _re.findall(r"[a-z]{4,}", " ".join(bits).lower())
+                if w not in PLAN_FILLER}
+        said = set(_re.findall(r"[a-z]{4,}", (text or "").lower()))
+        return len(said & pool) >= min(2, len(pool))
+
+    def _grounded(text: str) -> bool:
+        """True when the reply names something from this item itself.
+
+        A hint may legitimately ask a question instead of naming the method
+        ("as x approaches 1, what does x approach?"), so grounding is the
+        other way a reply proves it is about this item rather than reciting a
+        rule that belongs to a different one.
+        """
+        import re as _re
+
+        src = (prompt or expected).lower()
+        marks = set(_re.findall(r"\d+", src)) | set(_re.findall(r"\b[a-z]\b", src))
+        said = set(_re.findall(r"\d+|\b[a-z]\b", (text or "").lower()))
+        return bool(marks & said)
+
+    def _plan_step_idx(text: str) -> int | None:
+        """Index of the plan step this line completes, or None.
+
+        The item checker compares an attempt with the item's own solution, so
+        a correct intermediate line reads "not equivalent" even when it is
+        exactly the line a plan step asked for. Without this the tutor called
+        its own step 1 wrong: it asked for 0.6x = 2.4, then marked it incorrect.
+        Only full equations count — a bare value matches almost any step.
+        """
+        for i, st in enumerate(plan):
+            exp = str(st.get("expected_expression", "") or "")
+            if "=" not in exp:
+                continue
+            ct = str(st.get("check_type", "") or "equivalent_expression").lower()
+            try:
+                if _planmod.check_step(exp, text, ct) == "correct":
+                    return i
+            except Exception:
+                continue
+        return None
 
     intent = _intent.classify(student, has_session=True)
 
@@ -612,8 +886,8 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
             problem=prompt or expected, verdict=verdict,
             hint_level=state["hints"],
             intent=intent_name or intent.lower(), mode="practice",
-            first_name=_student_first_name(db, 1),
-            student_answer=student, repeats=repeats)
+            first_name=_student_first_name(db, uid),
+            student_answer=student, repeats=repeats, task=task)
 
     def _log_turn(rtype: str, verdict: str) -> None:
         import logging as _logging
@@ -627,7 +901,9 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
               rtype: str = "bubble") -> dict:
         history.extend([{"role": "user", "content": student},
                         {"role": "assistant", "content": reply}])
-        _practice_progress_record(db, ref, item_id, verdict, state["hints"])
+        thread.save()
+        _practice_progress_record(db, ref, item_id, verdict, uid,
+                                  state["hints"])
         _log_turn(rtype, verdict)
         return {"verdict": verdict, "reply": reply, "detail": detail,
                 "intent": intent, "replyType": rtype,
@@ -655,17 +931,46 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
             "prints that label. "
             + ("For level 3 the worked example must use different numbers "
                "than the student's item. " if lvl == 3 else "")
-            + f"{item_line} {extra}",
+            + f"{item_line} {plan_line} {extra}",
             "", verdict="incorrect", example_guard=lvl == 3)
         body = _model_body(body)
-        micro = PRACTICE_MICRO_STEPS[state["misses"] % len(PRACTICE_MICRO_STEPS)]
+        if body and plan and not (_on_method(body, min(lvl, len(plan)) - 1)
+                                  or _grounded(body)):
+            # Live failure: rung 1 on a factoring item came back as "whatever
+            # you do to one side, do to the other" — a linear rule that names
+            # no move of this item and cannot finish it. The verified move for
+            # the rung replaces it.
+            body = ""
+        # Deterministic fallback follows the verified path too: rung N names
+        # plan step N's move, so a failed model call still teaches the right
+        # method instead of a generic sentence.
+        if plan:
+            rung = min(lvl, len(plan)) - 1
+            # No "Step N of M:" here: the panel already prints "Hint N —", so
+            # the rung is the move itself, not a second label stacked on it.
+            micro = f"{_instr(rung)}. Write just that line — what do you get?"
+            if lvl > len(plan):
+                # The top rung asks for smaller than the plan itself, so use
+                # that move's own micro-steps instead of restating the last one.
+                bits = [str(m).strip().rstrip(".")
+                        for m in (plan[rung].get("micro_steps") or [])
+                        if str(m).strip()]
+                if bits:
+                    micro = ("In smaller pieces: " + bits[0] + "".join(
+                        ". Then " + b[:1].lower() + b[1:] for b in bits[1:])
+                        + ". Do only the first one and send that line.")
+        else:
+            micro = PRACTICE_MICRO_STEPS[state["misses"] % len(PRACTICE_MICRO_STEPS)]
         last = next((str(h.get("content", "")) for h in reversed(history)
                      if h.get("role") == "assistant"), "")
         if micro in last:
-            micro = PRACTICE_MICRO_STEPS[
-                (state["misses"] + 1) % len(PRACTICE_MICRO_STEPS)]
+            if plan and min(lvl, len(plan)) < len(plan):
+                micro = _move(min(lvl, len(plan)))
+            else:
+                micro = PRACTICE_MICRO_STEPS[
+                    (state["misses"] + 1) % len(PRACTICE_MICRO_STEPS)]
         return _float_display(
-            f"Hint {lvl} — {body or (micro if lvl >= 4 else PRACTICE_HINT_RUNGS[lvl - 1])}")
+            f"Hint {lvl} — {body or (micro if (lvl >= 4 or plan) else PRACTICE_HINT_RUNGS[lvl - 1])}")
 
     if intent == "OFF_TOPIC":
         return _turn(_say(
@@ -720,30 +1025,60 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
 
     if intent in ("START_STEP", "FRUSTRATED"):
         # "I don't know" and "what should I do?" are not attempts: no miss, no
-        # hint spent. The student gets the first move on the item as an action.
+        # hint spent. The student gets the next move on the item as an action.
+        given = int(state.get("moves", 0) or 0)
+        if plan and intent == "START_STEP" and given < len(plan):
+            # Advance by moves actually handed out, not by how often the
+            # student asked: a transcript full of stale replies still walks
+            # the verified path in order instead of repeating its first line.
+            state["moves"] = given + 1
+            already = ""
+            if given:
+                already = (f"You already gave move {given}: "
+                           f"{_instr(given - 1)}. Do not restate it. ")
+            said = _say(
+                "The student asked what to do. Give only this one move, in "
+                "your own words, and stop before the next one. Never state "
+                f"what it evaluates to. End by asking what they get. {already}"
+                f"Move {given + 1} of {len(plan)}: {_instr(given)}. "
+                f"{item_line}",
+                _move(given), verdict="where_to_start",
+                intent_name="where_to_start")
+            prior = {str(h.get("content", "")) for h in history
+                     if h.get("role") == "assistant"}
+            if said in prior or not _on_method(said, given):
+                # Live failures: the model re-worded the move it had already
+                # given, so the walk looked stuck on step 1, and it handed out
+                # a move from another method. The deterministic line for this
+                # turn's move always advances, and always teaches this item.
+                said = _float_display(_move(given))
+            return _turn(said, "not_an_attempt", "", "step")
         asks = sum(1 for h in history if h.get("role") == "user" and
                    _intent.classify(str(h.get("content", "")), True) == intent)
-        if asks >= 2:
-            # A third "I'm lost" means restating the start is not helping:
-            # climb one rung of the ladder instead.
+        if asks >= 2 or (plan and given >= len(plan)):
+            # Either the verified path is used up or a third "I'm lost" means
+            # restating the start is not helping: climb the ladder instead.
             return _turn(_hint(min(4, state["hints"] + 1),
                                "The student asked what to do more than once."),
                          "not_an_attempt", "", "hint")
+        first_move = _instr(0) if plan else ""
         scripted = (
             "This one is tricky, and that's okay. One small move first: say "
             "in words what the item asks for, then write only that line."
             if intent == "FRUSTRATED" else
-            "First move only: look at the left side of the item and name the "
-            "very first operation you would do. Write just that line — what "
-            "do you get?")
+            (f"First move only: {first_move}. Write just that line — what do "
+             "you get?" if first_move else
+             "First move only: look at the left side of the item and name the "
+             "very first operation you would do. Write just that line — what "
+             "do you get?"))
         said = _say(
             (f"The student is frustrated. Acknowledge in one sentence, then "
              "shrink the work to one small move on this item and ask them to "
-             f"send only that. {item_line}"
+             f"send only that. {item_line} {plan_line}"
              if intent == "FRUSTRATED" else
              "The student asked what to do. Give one action for the first "
-             f"move on this item — never the result. {item_line} End by "
-             "asking what they get."),
+             f"move on this item — never the result. {item_line} {plan_line} "
+             "End by asking what they get."),
             scripted, verdict=("unclear" if intent == "FRUSTRATED"
                                else "where_to_start"),
             intent_name=("frustrated" if intent == "FRUSTRATED"
@@ -777,6 +1112,7 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
 
     if status == "correct":
         state["hints"] = 0
+        state["moves"] = 0
         return _turn(_say(
             "Our math checker VERIFIED this attempt correct. Confirm warmly "
             "in one sentence and ask what they want to practise next. Do not "
@@ -804,6 +1140,29 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
             verdict="partial"), "partial", detail, "partial")
 
     if status == "incorrect":
+        # A correct intermediate line is not a miss. The item is graded
+        # against its own solution, so "0.6x = 2.4" — exactly what move 2 of
+        # the verified path asked for — reads "not equivalent" on its own.
+        # Match the line against the plan before it is counted as wrong.
+        hit = _plan_step_idx(cleaned)
+        if hit is not None and hit + 1 < len(plan):
+            state["moves"] = max(int(state.get("moves", 0) or 0), hit + 1)
+            state["hints"] = 0
+            nxt = hit + 1
+            said = _say(
+                f"Their line {cleaned} is the verified result of move "
+                f"{hit + 1} of {len(plan)} on this item. Confirm in one short "
+                "sentence that this line is right — say nothing about which "
+                "operation they used, because you cannot see their working — "
+                "then give only the next move and ask what they get. "
+                f"Move {nxt + 1} of {len(plan)}: {_instr(nxt)}. Never state "
+                f"what that evaluates to. {item_line}",
+                _move(nxt), verdict="correct", intent_name="where_to_start")
+            if not _on_method(said, nxt):
+                said = _float_display(_move(nxt))
+            return _turn(said, "partial",
+                         f"Matches move {hit + 1} of the verified path.",
+                         "step")
         state["misses"] += 1
         repeats = any(h.get("role") == "user"
                       and str(h.get("content", "")).strip() == student.strip()
@@ -836,7 +1195,8 @@ def api_practice_attempt(payload: dict, db: Session = Depends(get_db)):
 
 
 @app.post("/api/tutor/chat")
-def api_tutor_chat(payload: dict, db: Session = Depends(get_db)):
+def api_tutor_chat(request: Request, payload: dict,
+                   db: Session = Depends(get_db)):
     """Floating Math Tutor chat (Student View only).
 
     Policy (enforced here, never in prompts alone):
@@ -847,11 +1207,12 @@ def api_tutor_chat(payload: dict, db: Session = Depends(get_db)):
       against assignment solutions, never reveal answers.
     - Lesson/general context: Socratic guidance grounded in the current
       lesson topic; never a worked solution or final answer.
-    Server-side conversation state is shared with the practice page via
-    DEMO_HISTORY so both surfaces continue one thread.
+    Server-side conversation state is shared with the practice page through
+    the stored thread, so both surfaces continue one conversation.
     """
     from .verifier import MAX_LEN as _MAX_LEN
 
+    uid = _viewer_id(request, db)
     message = str(payload.get("message", "") or "")[:_MAX_LEN].strip()
     if not message:
         raise HTTPException(400, "Message is required")
@@ -891,21 +1252,19 @@ def api_tutor_chat(payload: dict, db: Session = Depends(get_db)):
         if item_id not in guided:
             raise HTTPException(404, "Practice item not found")
         if wants_answer:
-            key = f"practice:{link_id}:{item_id}"
-            history = DEMO_HISTORY.setdefault(key, [])
+            thread = _thread(db, f"practice:{link_id}:{item_id}:u{uid}")
             reply = ("I can't give the final answer — that's the rule that "
                      "makes practice work. Tell me the last step you tried, "
                      "or press Check Step on your attempt, and I'll guide "
                      "the next move.")
-            history += [{"role": "user", "content": message},
-                        {"role": "assistant", "content": reply}]
+            thread.append(message, reply)
+            thread.save()
             return {"reply": reply, "mode": "practice", "revealed": False}
         practice_payload = {
-            "link_id": link_id, "item_id": item_id,
-            "response": message,
-            "hint_level": int(context.get("hint_level", 1) or 1),
+            "ref": link_id, "item_id": item_id,
+            "response": message, "course": context.get("course", ""),
         }
-        result = api_practice_attempt(practice_payload, db)
+        result = api_practice_attempt(request, practice_payload, db)
         return {"reply": result.get("reply", ""), "mode": "practice",
                 "verdict": result.get("verdict", ""),
                 "revealed": False}
@@ -927,7 +1286,8 @@ def api_tutor_chat(payload: dict, db: Session = Depends(get_db)):
     # --- Lesson / general context: the same brain, never a worked answer.
     lesson_title = str(context.get("lesson_title", "") or "")[:200]
     lesson_meta = str(context.get("lesson_meta", "") or "")[:200]
-    history = DEMO_HISTORY.setdefault("float-tutor:general", [])
+    thread = _thread(db, f"float-tutor:general:u{uid}")
+    history = thread.messages
     if wants_answer:
         reply = ("I won't give the final answer — but I will get you there. "
                  "What have you tried so far? Show me your last step and "
@@ -945,7 +1305,7 @@ def api_tutor_chat(payload: dict, db: Session = Depends(get_db)):
             turn=_chat.turn_context(
                 problem=lesson_title or "(no problem open yet)",
                 verdict="unclear", intent="concept_question",
-                mode="practice", first_name=_student_first_name(db, 1),
+                mode="practice", first_name=_student_first_name(db, uid),
                 notation=lesson_meta, student_answer=message),
             situation=(
                 "The student is in the AI Tutor tab with lesson context only: "
@@ -957,15 +1317,17 @@ def api_tutor_chat(payload: dict, db: Session = Depends(get_db)):
                   "problem gives you and what it's asking for, try the "
                   "smallest first step, and tell me what you got. "
                   "Add your Nebius key for live Socratic tutoring."))
-    history += [{"role": "user", "content": message},
-                {"role": "assistant", "content": reply}]
+    thread.append(message, reply)
+    thread.save()
     return {"reply": reply, "mode": mode, "revealed": False}
 
 
 @app.get("/api/tutor/session")
-def api_tutor_session(course: str = "", db: Session = Depends(get_db)):
+def api_tutor_session(request: Request, course: str = "",
+                      db: Session = Depends(get_db)):
     """Resume hook: the widget + AI Tutor tab share this open session."""
-    return _float_thread_payload(db, 1, course or "default")
+    return _float_thread_payload(db, _viewer_id(request, db),
+                                 course or "default")
 
 
 def _float_thread_payload(db: Session, student_id: int,
@@ -1001,53 +1363,71 @@ def _float_thread_payload(db: Session, student_id: int,
 
 FLOAT_TUTOR_RATE_LIMIT = 30  # messages per student per 10 minutes
 FLOAT_TUTOR_WINDOW_S = 600
-FLOAT_TUTOR_HITS: dict[int, list[float]] = {}
 GRADED_HINTS_ONLY = True  # single setting: graded mode restricts hints
 
-# Pending new-problem confirmations: (student_id, course_id) -> record.
-# In-memory, consistent with DEMO_HISTORY; expires after 10 minutes.
-# TODO: move to the database (new table) so it survives restarts.
-# On loss/expiry the router re-runs and never grades a probable new
-# problem as a step answer.
-FLOAT_TUTOR_PENDING: dict[tuple[int, str], dict] = {}
+# A new-problem offer the student has not answered yet expires after 10
+# minutes; on loss or expiry the router re-runs and never grades a probable
+# new problem as a step answer.
 FLOAT_TUTOR_PENDING_TTL_S = 600
 
 
-def _float_pending_get(student_id: int, course_id: str) -> dict | None:
+def _float_pending_row(db: Session, student_id: int, course_id: str):
+    return db.query(TutorPending).filter(
+        TutorPending.student_id == student_id,
+        TutorPending.course_id == course_id).first()
+
+
+def _float_pending_get(db: Session, student_id: int,
+                       course_id: str) -> dict | None:
     import time as _time
 
-    rec = FLOAT_TUTOR_PENDING.get((student_id, course_id))
-    if not rec:
+    row = _float_pending_row(db, student_id, course_id)
+    if not row:
         return None
-    if _time.time() - rec.get("ts", 0) > FLOAT_TUTOR_PENDING_TTL_S:
-        FLOAT_TUTOR_PENDING.pop((student_id, course_id), None)
+    if _time.time() - (row.ts or 0) > FLOAT_TUTOR_PENDING_TTL_S:
+        db.delete(row)
+        db.commit()
         return None
-    return rec
+    return {"problem": row.problem_text, "ts": row.ts}
 
 
-def _float_pending_set(student_id: int, course_id: str,
+def _float_pending_set(db: Session, student_id: int, course_id: str,
                        problem: str) -> None:
     import time as _time
 
-    FLOAT_TUTOR_PENDING[(student_id, course_id)] = {
-        "problem": problem, "ts": _time.time()}
+    row = _float_pending_row(db, student_id, course_id)
+    if row is None:
+        row = TutorPending(student_id=student_id, course_id=course_id)
+        db.add(row)
+    row.problem_text = problem
+    row.ts = _time.time()
+    db.commit()
 
 
-def _float_pending_clear(student_id: int, course_id: str) -> None:
-    FLOAT_TUTOR_PENDING.pop((student_id, course_id), None)
+def _float_pending_clear(db: Session, student_id: int,
+                         course_id: str) -> None:
+    row = _float_pending_row(db, student_id, course_id)
+    if row is not None:
+        db.delete(row)
+        db.commit()
 
 
-def _float_rate_ok(student_id: int) -> bool:
+def _float_rate_ok(db: Session, student_id: int) -> bool:
+    """Allow this student's message, or bounce it to the sliding window."""
     import time as _time
 
     now = _time.time()
-    hits = [t for t in FLOAT_TUTOR_HITS.get(student_id, [])
-            if now - t < FLOAT_TUTOR_WINDOW_S]
-    if len(hits) >= FLOAT_TUTOR_RATE_LIMIT:
-        FLOAT_TUTOR_HITS[student_id] = hits
+    db.query(TutorRateHit).filter(
+        TutorRateHit.student_id == student_id,
+        TutorRateHit.ts < now - FLOAT_TUTOR_WINDOW_S).delete(
+        synchronize_session=False)
+    recent = db.query(TutorRateHit).filter(
+        TutorRateHit.student_id == student_id).count()
+    if recent >= FLOAT_TUTOR_RATE_LIMIT:
+        db.commit()
         return False
-    hits.append(now)
-    FLOAT_TUTOR_HITS[student_id] = hits
+    db.add(TutorRateHit(student_id=student_id, ts=now))
+    db.commit()
     return True
 
 
@@ -1186,7 +1566,9 @@ def _model_body(llm_text: str) -> str:
                        _re.IGNORECASE)
     hint = _re.compile(
         r"^\s*(?:\U0001F4A1\s*)?(?:"
-        r"(?:hint|level|ladder|rung)[\s\-]*(?:level|rung)?\s*\d*\s*[:\-–—]\s*"
+        r"(?:hint|level|ladder|rung)[\s\-]*(?:level|rung)?\s*\d*"
+        r"(?:\s*\(\s*of\s*\d+\s*\)|\s+of\s+\d+)?"
+        r"\s*[:\-–—]\s*"
         r"|(?:hint\s+)?\d+\s*[:\-–—]\s*)", _re.IGNORECASE)
     body = (llm_text or "").strip()
     for _ in range(3):
@@ -1197,7 +1579,14 @@ def _model_body(llm_text: str) -> str:
         body = hint.sub("", body.strip(), count=1).strip()
         if body == before:
             break
-    return body
+    # A label the model copied into the middle of its own reply survives the
+    # anchored pass above — live failure: "Hint 2 — That's not the factored
+    # form yet. Hint 2 — Look at the + 10 …".
+    interior = _re.compile(
+        r"(?<=[.!?]\s)\s*(?:hint|step|level|rung)\s*\d+"
+        r"(?:\s*\(\s*of\s*\d+\s*\)|\s+of\s+\d+)?\s*[:\-–—]\s*(\w?)",
+        _re.IGNORECASE)
+    return interior.sub(lambda m: m.group(1).upper(), body).strip()
 
 
 def _float_display(reply: str) -> str:
@@ -1278,10 +1667,14 @@ def _reveal_pattern(value: str) -> str | None:
     if _re.search(r"[a-z]", v):
         return rf"(?<![\w.]){core}{tail}"
     # A bare number only counts as a reveal when the wording hands it over:
-    # "the answer is 3" or "x = 3". The item itself shows the same digits.
-    return (r"(?:\b(?:answer|result|value|solution|limit|it|that|this|you)"
+    # "the answer is 3", "x = 3", or the root inside a stated factor —
+    # "(x - 2)(x - 5) = 0" gives the whole solution away without ever using
+    # the word answer. The item itself shows the same digits, so a value on
+    # its own is still not a reveal.
+    return (r"(?:\b(?:answer|result|value|solution|limit|it|that|this|you"
+            r"|step|form|expression|product)"
             r"[^.!\n]{0,28}?(?:\bis\b|:|\bequals?|\bcomes to|\bworks out to)"
-            rf"|\b[a-z]\s*=)\s*{core}{tail}")
+            rf"|\b[a-z]\s*=|\(\s*[a-z]\s*[-+]\s*)\s*{core}{tail}")
 
 
 def _reply_reveals(reply: str, values) -> bool:
@@ -1426,6 +1819,20 @@ def _float_step_map(session: TutorSession) -> list[str]:
     return titles
 
 
+def _float_step_question(step: dict) -> str:
+    """The question that closes a step, in that step's own terms.
+
+    "What equation do you get?" is right for algebra and wrong for a limit
+    or a domain, where there may be no equation to write down.
+    """
+    ct = str(step.get("check_type", "") or "").lower()
+    if ct in ("limit", "derivative", "integral", "numeric_value"):
+        return "What do you get?"
+    if ct == "conceptual":
+        return "What is your answer?"
+    return "What equation do you get?"
+
+
 def _float_last_reply(db: Session, session) -> str:
     """The tutor's previous wording — used to keep hints from repeating."""
     for turn in reversed(_float_history(db, session.id if session else 0)):
@@ -1476,7 +1883,7 @@ def _float_turn(session, *, step=None, verdict="", hint_level=0, intent="",
         step=step or {}, verdict=verdict, hint_level=hint_level,
         intent=intent, mode=mode, first_name=first_name, notation=notation,
         plan=_float_plan(session), student_answer=student_answer,
-        repeats=repeats)
+        repeats=repeats, task=str(getattr(session, "task", "") or ""))
 
 
 def _float_say(db: Session, session, message: str, *, intent: str,
@@ -1567,7 +1974,8 @@ def _float_hint_said(db: Session, session, message: str, step: dict,
 
 
 @app.post("/api/tutor/nudge")
-def api_tutor_nudge(payload: dict, db: Session = Depends(get_db)):
+def api_tutor_nudge(request: Request, payload: dict,
+                    db: Session = Depends(get_db)):
     """One gentle idle nudge per step, never a second one.
 
     The client calls this after the student has typed nothing for a while.
@@ -1579,7 +1987,7 @@ def api_tutor_nudge(payload: dict, db: Session = Depends(get_db)):
         ctx = {}
     course_id = str(ctx.get("courseId", "") or ctx.get("course", "")
                     or "default")
-    session = _float_open_session(db, 1, course_id)
+    session = _float_open_session(db, _viewer_id(request, db), course_id)
     if not session or session.status != "active" or not session.total_steps:
         return {"reply": "", "replyType": "noop"}
     idx = session.current_step_index
@@ -1609,7 +2017,8 @@ def api_tutor_nudge(payload: dict, db: Session = Depends(get_db)):
 
 
 @app.post("/api/tutor/message")
-def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
+def api_tutor_message(request: Request, payload: dict,
+                      db: Session = Depends(get_db)):
     """Floating-tutor guided chat. CAS decides correctness; replies guide.
 
     Input:  {message, pageContext} (student/course from session, never client).
@@ -1621,7 +2030,7 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
 
     from . import float_plan as _plan
 
-    student_id = 1  # demo single-student session (auth provides this later)
+    student_id = _viewer_id(request, db)
     message = str(payload.get("message", "") or "")[:500].strip()
     ctx = payload.get("pageContext") or payload.get("pagecontext") or {}
     if not isinstance(ctx, dict):
@@ -1630,7 +2039,7 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
     course_id = str(ctx.get("courseId", "") or ctx.get("course", "")
                     or "default")
 
-    if not _float_rate_ok(student_id):
+    if not _float_rate_ok(db, student_id):
         raise HTTPException(429, "Slow down — 30 messages per 10 minutes.")
     if not message:
         return {"reply": "Please rephrase that — send an equation like "
@@ -1645,6 +2054,38 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
     student_name = _student_first_name(db, student_id)
     session = _float_open_session(db, student_id, course_id)
     lowered = message.lower()
+
+    # A practice item carries its own question. The client sends the item
+    # id, never the problem text, so the tutor works on the item the
+    # student is actually looking at — and knows what it asks.
+    item_expr = item_task = ""
+    item_plan: list[dict] = []
+    if ctx_type == "practice":
+        item_ref = str(ctx.get("ref", "") or "").strip()
+        item_id = str(ctx.get("item_id", "") or "").strip()
+        if item_ref and item_id:
+            from . import float_plan as _planmod
+            try:
+                item_lesson = _practice_lesson(db, item_ref)
+                # Looking this item up must not generate the rest of the set:
+                # a generation round is ~15s of model time, and the student
+                # is waiting on an answer to the message they just sent.
+                item_set = _practice_set(db, item_lesson, top_up=False)
+                item = {i.get("item_id"): i for i in item_set["items"]}.get(
+                    item_id)
+            except Exception:
+                item = None
+            if item:
+                item_expr = _planmod.canonical_expression(
+                    str(item.get("prompt_latex") or ""))
+                item_task = str(item.get("task") or "").strip()
+                item_plan = _practice_plan(db, item_lesson, item)
+                if session and session.problem_text != item_expr:
+                    # A session left open on a DIFFERENT question must not be
+                    # reused here, or the tutor answers the wrong question.
+                    session.status = "abandoned"
+                    db.commit()
+                    session = None
 
     def _dump(plan: list[dict]) -> str:
         return _json.dumps(plan)
@@ -1702,12 +2143,12 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
     intent = _intent.classify(message, has_session=bool(session))
     course_ref = str(ctx.get("course", "") or ctx.get("courseId", "") or "")
 
-    _pending = _float_pending_get(student_id, course_id)
+    _pending = _float_pending_get(db, student_id, course_id)
     if _pending:
         # Awaiting "Start new problem?" answer: yes/no only.
         if lowered.strip() in ("yes", "start new problem", "start",
                                "new problem", "start it"):
-            _float_pending_clear(student_id, course_id)
+            _float_pending_clear(db, student_id, course_id)
             if session and session.status == "active":
                 session.status = "abandoned"
                 db.commit()
@@ -1745,7 +2186,7 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
                           "step", "waiting", 0)
         if lowered.strip() in ("no", "no, it's my answer", "my answer",
                                "it's my answer"):
-            _float_pending_clear(student_id, course_id)
+            _float_pending_clear(db, student_id, course_id)
             # Fall through: grade the ORIGINAL pending message as the step,
             # bypassing the confirm check (the student just declined it).
             message = _pending["problem"]
@@ -1780,7 +2221,7 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
             except Exception:
                 _confirm = False
         if _confirm:
-            _float_pending_set(student_id, course_id, message)
+            _float_pending_set(db, student_id, course_id, message)
             return {"reply": ("That looks like a new problem. Start it now?"),
                     "replyType": "confirm_new_problem", "stepIndex": 0,
                     "totalSteps": 0, "stepStatus": "waiting", "hintLevel": 0,
@@ -2124,18 +2565,24 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
     # Uses the template dispatcher with validation; unplannable input
     # drops to generic Socratic mode instead of a dead end.
     if session is None:
-        plan, source = _plan.build_plan(message)
-        if plan:
-            ok, reason = _plan.validate_plan(plan, message)
-            import logging as _logging
-            _logging.getLogger("mathpilot.tutor").info(
-                "plan_source=%s validation=%s (%s)", source, ok, reason)
-            if not ok:
-                plan = None
+        plan = list(item_plan)
+        problem = item_expr or message
+        task = item_task
+        source = "practice item" if plan else ""
+        if not plan:
+            plan, source = _plan.build_plan(message, task=item_task)
+            if plan:
+                ok, reason = _plan.validate_plan(plan, message)
+                import logging as _logging
+                _logging.getLogger("mathpilot.tutor").info(
+                    "plan_source=%s validation=%s (%s)", source, ok, reason)
+                if not ok:
+                    plan = None
         if plan:
             session = TutorSession(
                 student_id=student_id, course_id=course_id,
-                problem_text=message, solution_plan_json=_dump(plan),
+                problem_text=problem, task=task,
+                solution_plan_json=_dump(plan),
                 status="active", current_step_index=0,
                 total_steps=len(plan), graded_mode=graded)
             db.add(session)
@@ -2145,9 +2592,19 @@ def api_tutor_message(payload: dict, db: Session = Depends(get_db)):
             head = "Graded assignment: limited hints. " if graded else ""
             return _shape(session,
                           f"{head}Step 1: {plan[0]['instruction']} "
-                          f"What equation do you get?",
+                          f"{_float_step_question(plan[0])}",
                           "step", "waiting", 0)
-        # Generic Socratic mode: no invented plan, honest about it.
+        # Generic Socratic mode: no invented plan, honest about it — but
+        # still anchored to the question, so a follow-up stays on it.
+        if item_task or item_expr:
+            return {"reply": (
+                f"This one is about {item_task or item_expr}. I don't have a "
+                "worked path for it yet, so let's reason it out together. "
+                "What do you notice about the form of the expression, and "
+                "which rule would you try first?"),
+                "replyType": "bubble", "stepIndex": 0, "totalSteps": 0,
+                "stepStatus": "waiting", "hintLevel": 0,
+                "sessionDone": False, "genericMode": True}
         return {"reply": ("I can work with that, but I don't have a "
                           "step-by-step plan I trust for it yet. What do you "
                           "notice about the form of the problem? What "
@@ -2369,8 +2826,9 @@ def activity_page(activity_id: int, request: Request, db: Session = Depends(get_
     if not activity:
         raise HTTPException(404, "Activity not found")
     steps = steps_of(activity)
+    uid = _viewer_id(request, db)
     attempts = db.query(Attempt).filter(
-        Attempt.activity_id == activity_id, Attempt.user_id == 1
+        Attempt.activity_id == activity_id, Attempt.user_id == uid
     ).order_by(Attempt.id.asc()).all()
     courses = db.query(Course).all()
     materials = db.query(CourseMaterial).filter(
@@ -2379,7 +2837,7 @@ def activity_page(activity_id: int, request: Request, db: Session = Depends(get_
     if not materials:
         materials = db.query(CourseMaterial).limit(3).all()
     review_req = db.query(ReviewRequest).filter(
-        ReviewRequest.activity_id == activity_id, ReviewRequest.user_id == 1
+        ReviewRequest.activity_id == activity_id, ReviewRequest.user_id == uid
     ).order_by(ReviewRequest.id.desc()).first()
 
     # Determine currently active step based on verified attempts
@@ -2400,16 +2858,15 @@ def activity_page(activity_id: int, request: Request, db: Session = Depends(get_
         "review_req": review_req,
         "active_nav": "dashboard",
         "demo": not config.ai_configured(),
-        "total_questions": 3,
-        "question_index": 1,
     })
 
 
 @app.post("/api/submit")
-def api_submit(payload: dict, db: Session = Depends(get_db)):
+def api_submit(request: Request, payload: dict, db: Session = Depends(get_db)):
     activity = db.get(Activity, payload.get("activity_id", 0))
     if not activity:
         raise HTTPException(404, "Activity not found")
+    uid = _viewer_id(request, db)
     steps = steps_of(activity)
     idx = int(payload.get("step_index", 0))
     if not steps or idx >= len(steps):
@@ -2418,31 +2875,30 @@ def api_submit(payload: dict, db: Session = Depends(get_db)):
     if not student.strip():
         return {"verdict": "incomplete", "reply": "Please enter a step first.", "revealed": False}
     prior_fails = db.query(Attempt).filter(
-        Attempt.activity_id == activity.id, Attempt.user_id == 1,
+        Attempt.activity_id == activity.id, Attempt.user_id == uid,
         Attempt.step_index == idx, Attempt.verdict != "correct").count()
-    history = DEMO_HISTORY.setdefault(f"{activity.id}:{idx}", [])
+    thread = _thread(db, f"a{activity.id}:{idx}:u{uid}")
     result = orchestrate(
         activity.problem_statement, steps[idx]["prompt"], steps[idx]["expected"],
         student, idx, len(steps), int(payload.get("hint_level", 0)),
         prior_fails, bool(activity.allow_solution_reveal),
-        activity.max_attempts_before_reveal or 3, history,
+        activity.max_attempts_before_reveal or 3, thread.messages,
     )
     if result["verdict"] != "correct" and steps and idx < len(steps):
         step_hints = steps[idx].get("hint", [])
         if step_hints:
             result["hint"] = step_hints[min(1, len(step_hints) - 1)]
 
-    history += [{"role": "user", "content": student},
-                {"role": "assistant", "content": result["reply"]}]
-    db.add(Attempt(activity_id=activity.id, user_id=1, step_index=idx,
+    thread.append(student, result["reply"])
+    db.add(Attempt(activity_id=activity.id, user_id=uid, step_index=idx,
                    student_response=student, verdict=result["verdict"],
                    hint_level=int(payload.get("hint_level", 0))))
-    db.commit()
+    thread.save()
     return result
 
 
 @app.post("/api/hint")
-def api_hint(payload: dict, db: Session = Depends(get_db)):
+def api_hint(request: Request, payload: dict, db: Session = Depends(get_db)):
     activity = db.get(Activity, payload.get("activity_id", 0))
     if not activity:
         raise HTTPException(404, "Activity not found")
@@ -2453,7 +2909,9 @@ def api_hint(payload: dict, db: Session = Depends(get_db)):
     if steps and idx < len(steps):
         arr = steps[idx].get("hint", [])
         text = arr[min(level - 1, len(arr) - 1)] if arr else ""
-    db.add(HintRequest(activity_id=activity.id, user_id=1, level=level, hint_text=text))
+    db.add(HintRequest(activity_id=activity.id,
+                       user_id=_viewer_id(request, db), level=level,
+                       hint_text=text))
     db.commit()
     return {"level": level, "hint": text}
 
@@ -2498,23 +2956,30 @@ def api_tutor_stuck(payload: dict):
 
 
 @app.post("/api/review-request")
-def api_review_request(payload: dict, db: Session = Depends(get_db)):
+def api_review_request(request: Request, payload: dict,
+                       db: Session = Depends(get_db)):
+    uid = _viewer_id(request, db)
     act_id = int(payload.get("activity_id", 0))
     req = db.query(ReviewRequest).filter(
-        ReviewRequest.activity_id == act_id, ReviewRequest.user_id == 1
+        ReviewRequest.activity_id == act_id, ReviewRequest.user_id == uid
     ).first()
     if not req:
-        req = ReviewRequest(activity_id=act_id, user_id=1, status="submitted", notes="Student requested instructor review")
+        req = ReviewRequest(activity_id=act_id, user_id=uid,
+                            status="submitted",
+                            notes="Student requested instructor review")
         db.add(req)
         db.commit()
-    return {"status": "submitted", "message": "Your work has been submitted for Dr. Lee to review!"}
+    return {"status": "submitted",
+            "message": f"Your work has been submitted for "
+                       f"{_instructor_name(db)} to review!"}
 
 
 @app.get("/lessons", response_class=HTMLResponse)
 def lessons_page(request: Request, db: Session = Depends(get_db)):
     """Student My Lessons: only lessons from assigned packages."""
     lesson_cards, _ = _student_cards(
-        db, db.query(Publication).order_by(Publication.id.desc()).all())
+        db, db.query(Publication).order_by(Publication.id.desc()).all(),
+        _viewer_id(request, db))
     return templates.TemplateResponse(request, "lessons.html", {
         "request": request, "cards": lesson_cards,
         "active_nav": "lessons", "demo": not config.ai_configured(),
@@ -2549,17 +3014,26 @@ def help_page(request: Request):
 
 
 @app.get("/instructor", response_class=HTMLResponse)
-def instructor(request: Request, db: Session = Depends(get_db)):
+def instructor(request: Request,
+               who: User = Depends(auth.require_instructor),
+               db: Session = Depends(get_db)):
     attempts = db.query(Attempt).order_by(Attempt.id.desc()).limit(50).all()
     students = db.query(User).filter(User.role == "student").all()
     total = db.query(Attempt).count()
     correct = db.query(Attempt).filter(Attempt.verdict == "correct").count()
     hint_count = db.query(HintRequest).count()
-    mastery = db.query(Mastery).filter(Mastery.user_id == 1).all()
+    # Per-student counts, so the roster table shows each student's own record
+    # instead of one column that only ever reads "no attempts yet".
+    stats = {}
+    for a in db.query(Attempt).all():
+        row = stats.setdefault(a.user_id, [0, 0])
+        row[1] += 1
+        if a.verdict == "correct":
+            row[0] += 1
     return templates.TemplateResponse(request, "instructor.html", {
         "request": request, "attempts": attempts,
         "students": students, "total": total, "correct": correct,
-        "hint_count": hint_count, "mastery": mastery,
+        "hint_count": hint_count, "stats": stats,
         "demo": not config.ai_configured(),
     })
 
@@ -2574,7 +3048,8 @@ def assignments(request: Request, db: Session = Depends(get_db)):
     content does not appear here.
     """
     _, asg_cards = _student_cards(
-        db, db.query(Publication).order_by(Publication.id.desc()).all())
+        db, db.query(Publication).order_by(Publication.id.desc()).all(),
+        _viewer_id(request, db))
     cards = [{
         "link_id": c["link_id"], "title": c["title"], "course": c["course"],
         "due": c["due"], "grading": "", "kind": c["status"],
@@ -2725,9 +3200,11 @@ def progress(request: Request, db: Session = Depends(get_db)):
     who = auth.viewer_or_demo_student(request, db)
     attempts = db.query(Attempt).filter(
         Attempt.user_id == who.id).order_by(Attempt.id.desc()).all()
-    mastery = db.query(Mastery).filter(Mastery.user_id == who.id).all()
     return templates.TemplateResponse(request, "progress.html", {"request": request, "attempts": attempts,
-                                       "mastery": mastery, "demo": not config.ai_configured()})
+                                       "verified": sum(
+                                           1 for a in attempts
+                                           if a.verdict == "correct"),
+                                       "demo": not config.ai_configured()})
 
 
 @app.post("/view-as")
@@ -2763,7 +3240,8 @@ def settings(request: Request):
 
 
 @app.post("/api/generate-questions")
-def api_generate_questions(payload: dict):
+def api_generate_questions(payload: dict,
+                           who: User = Depends(auth.require_instructor)):
     import app.generate as generate_mod
     try:
         result = generate_mod.generate_questions(
@@ -2780,21 +3258,24 @@ def api_generate_questions(payload: dict):
 
 
 @app.get("/instructor/dashboard", response_class=HTMLResponse)
-def instructor_dashboard(request: Request, db: Session = Depends(get_db)):
-    from .courses import get_course_options
+def instructor_dashboard(request: Request, db: Session = Depends(get_db),
+                         who: User = Depends(auth.require_instructor)):
+    from .courses import get_course_options, get_course_topics
     activities = db.query(Activity).all()
     courses = db.query(Course).all()
     shared_files = db.query(SharedFile).order_by(SharedFile.created_at.desc()).all()
     return templates.TemplateResponse(request, "instructor_dashboard.html", {
         "request": request, "activities": activities, "courses": courses,
         "course_options": get_course_options(),
+        "course_topics": get_course_topics(),
         "files": shared_files,
         "demo": not config.ai_configured(),
     })
 
 
 @app.get("/instructor/drafts", response_class=HTMLResponse)
-def instructor_drafts(request: Request, db: Session = Depends(get_db)):
+def instructor_drafts(request: Request, db: Session = Depends(get_db),
+                      who: User = Depends(auth.require_instructor)):
     """Saved drafts manager: list lessons/assignments with student links."""
     import json as _json
 
@@ -2847,127 +3328,6 @@ def instructor_drafts(request: Request, db: Session = Depends(get_db)):
     })
 
 
-@app.post("/api/lessons/assign")
-def api_lessons_assign(payload: dict, db: Session = Depends(get_db)):
-    """Mock assign: persist verified questions as Activities, link under a UUID."""
-    from .schemas import question_to_activity_fields, step_from_legacy
-
-    questions = payload.get("questions", [])
-    if not isinstance(questions, list) or not questions:
-        raise HTTPException(400, "No questions to assign")
-    topic = str(payload.get("topic", "Calculus"))
-    activity_ids: list[int] = []
-    stored_questions: list[dict] = []
-    for q in questions:
-        if not isinstance(q, dict) or not q.get("is_verified"):
-            continue
-        steps = []
-        for i, s in enumerate(q.get("steps", []) or []):
-            if not isinstance(s, dict):
-                continue
-            legacy = {
-                "prompt": s.get("description", ""),
-                "expected": s.get("expected_input_latex", ""),
-                "hint": list(s.get("hints", []) or []),
-            }
-            # Validate round-trip through the schema adapter.
-            step = step_from_legacy(legacy, i)
-            steps.append({"prompt": step.description,
-                          "expected": step.expected_input_latex,
-                          "hint": step.hints})
-        if not steps:
-            continue
-        fields = question_to_activity_fields.__wrapped__ if hasattr(
-            question_to_activity_fields, "__wrapped__") else None
-        _ = fields  # adapter applied below via explicit construction
-        activity = Activity(
-            title=str(q.get("prompt_latex", ""))[:200] or "Assigned question",
-            course_topic=topic,
-            problem_statement=str(q.get("prompt_latex", "")),
-            learning_objectives="",
-            expected_steps_json=json.dumps(steps),
-            accepted_methods="",
-            misconceptions="",
-            hint_sequence_json=json.dumps(
-                ["Conceptual question", "Specific hint",
-                 "Formula guidance", "Worked substep"]),
-            max_attempts_before_reveal=3,
-            allow_solution_reveal=True,
-        )
-        db.add(activity)
-        db.flush()
-        activity_ids.append(activity.id)
-        stored_questions.append(q)
-    if not activity_ids:
-        raise HTTPException(400, "No verifiable questions to assign")
-    db.commit()
-    link_id = uuid.uuid4().hex[:8]
-    LESSON_LINKS[link_id] = {"topic": topic,
-                             "questions": stored_questions,
-                             "activity_ids": activity_ids,
-                             "title": str(payload.get("title", "")),
-                             "due": str(payload.get("due", "")),
-                             "grading": str(payload.get("grading", "Completion")),
-                             "difficulty_balance": str(
-                                 payload.get("difficulty_balance", "mixed")),
-                             "worked_example": bool(
-                                 payload.get("worked_example", False))}
-    return {"link_id": link_id,
-            "solve_url": f"/student/solve/{link_id}/0",
-            "activity_ids": activity_ids}
-
-
-@app.get("/student/solve/{link_id}/{question_index}", response_class=HTMLResponse)
-def student_solve(link_id: str, question_index: int, request: Request,
-                  db: Session = Depends(get_db)):
-    link = LESSON_LINKS.get(link_id)
-    if not link:
-        raise HTTPException(404, "Class link not found (demo links clear on restart)")
-    ids = link["activity_ids"]
-    if not ids or not (0 <= question_index < len(ids)):
-        raise HTTPException(400, "Invalid question index")
-    activity = db.get(Activity, ids[question_index])
-    if not activity:
-        raise HTTPException(404, "Activity not found")
-    steps = steps_of(activity)
-    attempts = db.query(Attempt).filter(
-        Attempt.activity_id == activity.id, Attempt.user_id == 1
-    ).order_by(Attempt.id.desc()).all()
-    return templates.TemplateResponse(request, "student_solver.html", {
-        "request": request, "activity": activity, "steps": steps,
-        "active_step": 0, "hints": hints_of(activity), "attempts": attempts,
-        "link_id": link_id, "question_index": question_index,
-        "total_questions": len(ids),
-        "demo": not config.ai_configured(),
-    })
-
-
-@app.get("/success/{link_id}", response_class=HTMLResponse)
-def assign_success(link_id: str, request: Request):
-    link = LESSON_LINKS.get(link_id)
-    if not link:
-        raise HTTPException(404, "Class link not found (demo links clear on restart)")
-    return templates.TemplateResponse(request, "success.html", {
-        "request": request, "link_id": link_id,
-        "topic": link.get("topic", ""),
-        "count": len(link.get("activity_ids", [])),
-        "title": link.get("title", ""),
-        "due": link.get("due", ""),
-        "grading": link.get("grading", ""),
-    })
-
-
-@app.get("/api/get-lesson/{link_id}")
-def api_get_lesson(link_id: str):
-    """Read-only inspector for a mock-assigned lesson (demo debugging)."""
-    link = LESSON_LINKS.get(link_id)
-    if not link:
-        raise HTTPException(404, "Class link not found (demo links clear on restart)")
-    return {"link_id": link_id, "topic": link.get("topic", ""),
-            "questions": link.get("questions", []),
-            "activity_ids": link.get("activity_ids", [])}
-
-
 @app.get("/api/analytics")
 def api_analytics(request: Request, course: str = "",
                   teacher: User = Depends(auth.require_instructor),
@@ -3003,7 +3363,8 @@ def _lesson_to_dict(lesson: Lesson) -> dict:
 
 
 @app.post("/api/lessons/generate")
-def api_lessons_generate(payload: dict):
+def api_lessons_generate(payload: dict,
+                         who: User = Depends(auth.require_instructor)):
     """Generate a structured instructor lesson (draft, unapproved)."""
     import app.lessons as lessons_mod
 
@@ -3024,7 +3385,8 @@ def api_lessons_generate(payload: dict):
 
 
 @app.post("/api/lessons/save")
-def api_lessons_save(payload: dict, db: Session = Depends(get_db)):
+def api_lessons_save(payload: dict, db: Session = Depends(get_db),
+                     who: User = Depends(auth.require_instructor)):
     """Create or update a lesson draft. Never auto-publishes."""
     import json as _json
 
@@ -3077,14 +3439,16 @@ def api_lessons_save(payload: dict, db: Session = Depends(get_db)):
 
 
 @app.get("/api/lessons")
-def api_lessons_list(db: Session = Depends(get_db)):
+def api_lessons_list(db: Session = Depends(get_db),
+                     who: User = Depends(auth.require_instructor)):
     """List lesson drafts (id, title, topic, status). No content bodies."""
     lessons = db.query(Lesson).order_by(Lesson.updated_at.desc()).all()
     return {"lessons": [_lesson_to_dict(les) for les in lessons]}
 
 
 @app.get("/api/lessons/{lesson_id}")
-def api_lessons_get(lesson_id: int, db: Session = Depends(get_db)):
+def api_lessons_get(lesson_id: int, db: Session = Depends(get_db),
+                    who: User = Depends(auth.require_instructor)):
     """Full lesson draft for the instructor editor (includes solutions)."""
     import json as _json
 
@@ -3107,7 +3471,8 @@ def api_lessons_get(lesson_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/lessons/{lesson_id}/approve")
 def api_lessons_approve(lesson_id: int, payload: dict,
-                        db: Session = Depends(get_db)):
+                        db: Session = Depends(get_db),
+                        who: User = Depends(auth.require_instructor)):
     """Approve a draft: verify math, derive student content, mark approved."""
     import json as _json
 
@@ -3149,7 +3514,8 @@ def api_lessons_approve(lesson_id: int, payload: dict,
 
 
 @app.delete("/api/lessons/{lesson_id}")
-def api_lessons_delete(lesson_id: int, db: Session = Depends(get_db)):
+def api_lessons_delete(lesson_id: int, db: Session = Depends(get_db),
+                     who: User = Depends(auth.require_instructor)):
     """Delete a lesson draft. Blocked while student links reference it."""
     lesson = db.get(Lesson, lesson_id)
     if not lesson:
@@ -3216,7 +3582,8 @@ def _items_with_verification(items: list) -> list[dict]:
 
 
 @app.post("/api/assignments/generate")
-def api_assignments_generate(payload: dict, db: Session = Depends(get_db)):
+def api_assignments_generate(payload: dict, db: Session = Depends(get_db),
+                             who: User = Depends(auth.require_instructor)):
     """Generate assignment items: from topic, or from an approved lesson.
 
     Uses the existing generate_questions pipeline (generate-then-verify).
@@ -3278,7 +3645,8 @@ def api_assignments_generate(payload: dict, db: Session = Depends(get_db)):
 
 
 @app.post("/api/assignments/save")
-def api_assignments_save(payload: dict, db: Session = Depends(get_db)):
+def api_assignments_save(payload: dict, db: Session = Depends(get_db),
+                           who: User = Depends(auth.require_instructor)):
     """Create or update an assignment draft. Never auto-publishes."""
     import json as _json
 
@@ -3343,14 +3711,16 @@ def api_assignments_save(payload: dict, db: Session = Depends(get_db)):
 
 
 @app.get("/api/assignments")
-def api_assignments_list(db: Session = Depends(get_db)):
+def api_assignments_list(db: Session = Depends(get_db),
+                         who: User = Depends(auth.require_instructor)):
     """List assignment drafts (metadata only, no solutions)."""
     rows = db.query(Assignment).order_by(Assignment.updated_at.desc()).all()
     return {"assignments": [_assignment_to_dict(a) for a in rows]}
 
 
 @app.get("/api/assignments/{asg_id}")
-def api_assignments_get(asg_id: int, db: Session = Depends(get_db)):
+def api_assignments_get(asg_id: int, db: Session = Depends(get_db),
+                         who: User = Depends(auth.require_instructor)):
     """Full assignment draft for the instructor editor (includes solutions)."""
     import json as _json
 
@@ -3368,7 +3738,8 @@ def api_assignments_get(asg_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/assignments/{asg_id}/approve")
-def api_assignments_approve(asg_id: int, db: Session = Depends(get_db)):
+def api_assignments_approve(asg_id: int, db: Session = Depends(get_db),
+                             who: User = Depends(auth.require_instructor)):
     """Approve an assignment draft: re-verify items, mark approved."""
     import json as _json
 
@@ -3388,7 +3759,8 @@ def api_assignments_approve(asg_id: int, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/assignments/{asg_id}")
-def api_assignments_delete(asg_id: int, db: Session = Depends(get_db)):
+def api_assignments_delete(asg_id: int, db: Session = Depends(get_db),
+                            who: User = Depends(auth.require_instructor)):
     """Delete an assignment draft. Blocked while student links reference it."""
     asg = db.get(Assignment, asg_id)
     if not asg:
@@ -3407,7 +3779,8 @@ def api_assignments_delete(asg_id: int, db: Session = Depends(get_db)):
 # --- Plan C: publications (lesson and/or assignment, frozen at publish) ---
 
 @app.post("/api/publications")
-def api_publications_create(payload: dict, db: Session = Depends(get_db)):
+def api_publications_create(payload: dict, db: Session = Depends(get_db),
+                            who: User = Depends(auth.require_instructor)):
     """Publish an approved lesson, assignment, or both as one package.
 
     Creates a stable Publication row with a link_id. Content is read from
@@ -3479,22 +3852,17 @@ def api_publications_create(payload: dict, db: Session = Depends(get_db)):
                 allow_solution_reveal=True,
             ))
     db.commit()
-    # Back-compat: keep the in-memory link working for the success page.
-    LESSON_LINKS[link_id] = {
-        "topic": (lesson.topic if lesson else asg.topic),
-        "questions": [], "activity_ids": [],
-        "title": pub.title, "due": pub.due_date,
-        "grading": pub.grading_policy,
-        "publication_id": pub.id,
-    }
     return {"link_id": link_id, "publication_id": pub.id,
+            "student_url": f"/learn/{link_id}" if lesson else
+            f"/myassignments/{link_id}",
             "solve_url": f"/learn/{link_id}",
             "lesson_id": lesson.id if lesson else None,
             "assignment_id": asg.id if asg else None}
 
 
 @app.delete("/api/publications/{link_id}")
-def api_publications_delete(link_id: str, db: Session = Depends(get_db)):
+def api_publications_delete(link_id: str, db: Session = Depends(get_db),
+                            who: User = Depends(auth.require_instructor)):
     """Retire a student link. Content referenced by no remaining link
     reverts to approved (editable/deletable); content still referenced
     by another link stays published."""
@@ -3521,12 +3889,12 @@ def api_publications_delete(link_id: str, db: Session = Depends(get_db)):
                 content.status = "approved"
                 reverted.append(label)
     db.commit()
-    LESSON_LINKS.pop(link_id, None)
     return {"retired": link_id, "reverted": reverted}
 
 
 @app.post("/api/assign")
-def api_assign(payload: dict, db: Session = Depends(get_db)):
+def api_assign(payload: dict, db: Session = Depends(get_db),
+                 who: User = Depends(auth.require_instructor)):
     """Assign a published lesson/assignment to a course with a due date.
 
     The instructor flow is Generate -> Save Draft -> Approve -> Publish ->
@@ -3578,7 +3946,7 @@ def api_assign(payload: dict, db: Session = Depends(get_db)):
                              or (asg.title if asg else "")),
                 "due": due,
                 "grading": str(payload.get("grading", "Completion")),
-            }, db)
+            }, db, who)
             pub = db.query(Publication).filter(
                 Publication.link_id == created["link_id"]).first()
         else:
@@ -3675,6 +4043,13 @@ def _assignment_items_for_student(db: Session, pub) -> list[dict]:
     return items
 
 
+def _submission_for(db: Session, pub_id: int, user_id: int) -> Submission:
+    """This student's attempt at this publication — and only theirs."""
+    return db.query(Submission).filter(
+        Submission.publication_id == pub_id,
+        Submission.user_id == user_id).first()
+
+
 @app.get("/myassignments/{link_id}", response_class=HTMLResponse)
 def student_assignment(link_id: str, request: Request,
                        db: Session = Depends(get_db)):
@@ -3693,9 +4068,7 @@ def student_assignment(link_id: str, request: Request,
     if not asg:
         raise HTTPException(404, "Assignment not found")
     items = _assignment_items_for_student(db, pub)
-    sub = db.query(Submission).filter(
-        Submission.publication_id == pub.id,
-        Submission.user_id == 1).first()
+    sub = _submission_for(db, pub.id, _viewer_id(request, db))
     try:
         saved = _json.loads(sub.answers_json) if sub and sub.answers_json else {}
     except Exception:
@@ -3719,19 +4092,19 @@ def student_assignment(link_id: str, request: Request,
 
 
 @app.post("/api/assignments/progress")
-def api_assignment_progress(payload: dict, db: Session = Depends(get_db)):
+def api_assignment_progress(request: Request, payload: dict,
+                            db: Session = Depends(get_db)):
     """Save draft answers (resume any time). Never marks submitted."""
     import json as _json
     from datetime import datetime, timezone
 
+    uid = _viewer_id(request, db)
     link_id = str(payload.get("link_id", "") or "").strip()
     pub = db.query(Publication).filter(
         Publication.link_id == link_id).first()
     if not pub or not pub.assignment_id:
         raise HTTPException(404, "Assignment not found")
-    sub = db.query(Submission).filter(
-        Submission.publication_id == pub.id,
-        Submission.user_id == 1).first()
+    sub = _submission_for(db, pub.id, uid)
     if sub and sub.status == "submitted":
         raise HTTPException(400, "Already submitted — answers are final")
     answers = payload.get("answers") or {}
@@ -3739,7 +4112,7 @@ def api_assignment_progress(payload: dict, db: Session = Depends(get_db)):
         raise HTTPException(400, "Invalid answers")
     clean = {str(k)[:40]: str(v)[:2000] for k, v in answers.items()}
     if not sub:
-        sub = Submission(publication_id=pub.id, user_id=1,
+        sub = Submission(publication_id=pub.id, user_id=uid,
                          answers_json=_json.dumps(clean), status="draft")
         db.add(sub)
     else:
@@ -3754,7 +4127,8 @@ MAX_TRIES = 3
 
 
 @app.post("/api/assignments/check")
-def api_assignment_check(payload: dict, db: Session = Depends(get_db)):
+def api_assignment_check(request: Request, payload: dict,
+                         db: Session = Depends(get_db)):
     """Grade one answer server-side with the deterministic verifier.
 
     Gives the student immediate correct/incorrect feedback WITHOUT revealing
@@ -3767,6 +4141,7 @@ def api_assignment_check(payload: dict, db: Session = Depends(get_db)):
 
     from .verifier import check_equivalent
 
+    uid = _viewer_id(request, db)
     link_id = str(payload.get("link_id", "") or "").strip()
     item_id = str(payload.get("item_id", "") or "").strip()
     answer = str(payload.get("answer", "") or "").strip()
@@ -3777,9 +4152,7 @@ def api_assignment_check(payload: dict, db: Session = Depends(get_db)):
     asg = db.get(Assignment, pub.assignment_id)
     if not asg:
         raise HTTPException(404, "Assignment not found")
-    sub = db.query(Submission).filter(
-        Submission.publication_id == pub.id,
-        Submission.user_id == 1).first()
+    sub = _submission_for(db, pub.id, uid)
     if sub and sub.status == "submitted":
         raise HTTPException(400, "Already submitted — answers are final")
     try:
@@ -3803,7 +4176,7 @@ def api_assignment_check(payload: dict, db: Session = Depends(get_db)):
                 steps[-1].get("expected_input_latex") or "").strip()
 
     if not sub:
-        sub = Submission(publication_id=pub.id, user_id=1,
+        sub = Submission(publication_id=pub.id, user_id=uid,
                          answers_json="{}", attempts_json="{}", status="draft")
         db.add(sub)
     try:
@@ -3863,19 +4236,19 @@ def api_assignment_check(payload: dict, db: Session = Depends(get_db)):
 
 
 @app.post("/api/assignments/submit")
-def api_assignment_submit(payload: dict, db: Session = Depends(get_db)):
+def api_assignment_submit(request: Request, payload: dict,
+                          db: Session = Depends(get_db)):
     """Final submission: persists answers, locks the row. No re-submit."""
     import json as _json
     from datetime import datetime, timezone
 
+    uid = _viewer_id(request, db)
     link_id = str(payload.get("link_id", "") or "").strip()
     pub = db.query(Publication).filter(
         Publication.link_id == link_id).first()
     if not pub or not pub.assignment_id:
         raise HTTPException(404, "Assignment not found")
-    sub = db.query(Submission).filter(
-        Submission.publication_id == pub.id,
-        Submission.user_id == 1).first()
+    sub = _submission_for(db, pub.id, uid)
     if sub and sub.status == "submitted":
         raise HTTPException(400, "Already submitted")
     answers = payload.get("answers") or {}
@@ -3884,7 +4257,7 @@ def api_assignment_submit(payload: dict, db: Session = Depends(get_db)):
     clean = {str(k)[:40]: str(v)[:2000] for k, v in answers.items()}
     now = datetime.now(timezone.utc)
     if not sub:
-        sub = Submission(publication_id=pub.id, user_id=1,
+        sub = Submission(publication_id=pub.id, user_id=uid,
                          answers_json=_json.dumps(clean), status="submitted",
                          submitted_at=now)
         db.add(sub)

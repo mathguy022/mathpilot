@@ -138,3 +138,57 @@ def test_factored_still_rejects_wrong_factors():
     assert check_factored("(x-5)(x-3) = 0", exp).status == "incorrect"
     assert check_factored("x^2 - 7x + 10 = 0", exp).status == "incorrect"
     assert check_factored("", exp).status == "incomplete"
+
+
+def test_solution_set_accepts_or_between_roots():
+    """"x = 2 or x = 5" lists two roots, not one root with a stray tail.
+
+    The parser used to split only on commas, so the second "x =" was
+    swallowed and the answer came back as the single value 5. A student who
+    wrote both correct roots was told they were wrong.
+    """
+    from app.verifier import _parse_answer_set
+
+    items, err = _parse_answer_set("x = 2 or x = 5")
+    assert err is None, err
+    assert len(items) == 2, items
+    assert sorted(str(i) for i in items) == ["2", "5"]
+
+
+def test_solution_set_accepts_braces_and_semicolons():
+    from app.verifier import _parse_answer_set
+
+    for answer in ("{x = 2, x = 5}", "x = 2; x = 5", "x=2,x=5", "x = 2, x = 5"):
+        items, err = _parse_answer_set(answer)
+        assert err is None, f"{answer}: {err}"
+        assert len(items) == 2, f"{answer}: {items}"
+
+
+def test_solution_set_rejects_a_malformed_value_instead_of_dropping_it():
+    """A second "=" is reported, never silently reduced to its right side."""
+    from app.verifier import _parse_answer_set
+
+    items, err = _parse_answer_set("x = 2 = 3")
+    assert items == []
+    assert err
+
+
+def test_both_roots_written_with_or_are_graded_correct():
+    """End to end: the answer a student actually types is graded correct."""
+    from app.schemas import Question
+    from app.verifier import verify_canonical
+
+    q = Question(id=0, prompt_latex="x^2 - 7x + 10 = 0", steps=[],
+                 final_answer_latex="x = 2 or x = 5")
+    v = verify_canonical(q)
+    assert v.status == "correct", f"{v.status}: {v.detail}"
+
+
+def test_one_of_two_roots_is_still_incomplete_not_correct():
+    from app.schemas import Question
+    from app.verifier import verify_canonical
+
+    q = Question(id=0, prompt_latex="x^2 - 7x + 10 = 0", steps=[],
+                 final_answer_latex="x = 5")
+    v = verify_canonical(q)
+    assert v.status != "correct", v

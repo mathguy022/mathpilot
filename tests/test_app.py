@@ -12,8 +12,11 @@ from app.main import app  # noqa: E402
 from app import auth  # noqa: E402
 from app.db import SessionLocal, Activity, Attempt, User  # noqa: E402
 from tests.test_planc_workflow import LESSON as PLAN_LESSON  # noqa: E402
+from tests._identity import new_teacher_client  # noqa: E402
 
 client = TestClient(app)
+# Authoring is instructor-only; student reads stay anonymous.
+teacher = new_teacher_client()
 
 
 def _instructor_id() -> int:
@@ -70,12 +73,21 @@ def test_health():
 
 
 def test_pages_render(cone_activity):
-    for path in ["/", f"/activity/{cone_activity}", "/instructor", "/assignments",
+    for path in ["/", f"/activity/{cone_activity}", "/assignments",
                  "/materials", "/progress",
                  "/courses", "/settings"]:
         r = client.get(path)
         assert r.status_code == 200, path
         assert "MathPilot" in r.text
+
+    # Class insights are instructor-only: signed in as a teacher the page
+    # renders, and the demo student's own session gets a 403 instead.
+    client.cookies.set(auth.COOKIE, auth.issue(_instructor_id()))
+    r = client.get("/instructor")
+    assert r.status_code == 200
+    assert "MathPilot" in r.text
+    client.cookies.clear()
+    assert client.get("/instructor").status_code == 403
 
 
 def test_submit_correct_and_incorrect(cone_activity):
@@ -127,12 +139,12 @@ def test_assignments_tab_lists_assigned_packages():
         "hints": [], "objective_tags": [], "difficulty": 1,
         "verification": "needs-review",
     }
-    s = client.post("/api/assignments/save", json={
+    s = teacher.post("/api/assignments/save", json={
         "topic": "Algebra", "title": "Tab assignment",
         "items": [a_item], "settings": {}})
     aid = s.json()["id"]
-    client.post(f"/api/assignments/{aid}/approve", json={})
-    a = client.post("/api/assign", json={
+    teacher.post(f"/api/assignments/{aid}/approve", json={})
+    a = teacher.post("/api/assign", json={
         "assignment_id": aid, "course": "Calculus 1", "due": "2026-12-01"})
     assert a.status_code == 200
     link = a.json()["link_id"]
@@ -142,13 +154,13 @@ def test_assignments_tab_lists_assigned_packages():
     assert "Calculus 1" in r2.text
     assert "2026-12-01" in r2.text
     # A lesson-only package must NOT appear here (it lives on My Lessons).
-    s = client.post("/api/lessons/save", json={
+    s = teacher.post("/api/lessons/save", json={
         "topic": "Limits", "lesson": dict(PLAN_LESSON, title="Tab lesson"),
         "settings": {}})
     lid = s.json()["id"]
-    client.post(f"/api/lessons/{lid}/approve",
+    teacher.post(f"/api/lessons/{lid}/approve",
                 json={"lesson": dict(PLAN_LESSON, title="Tab lesson")})
-    la = client.post("/api/assign", json={
+    la = teacher.post("/api/assign", json={
         "lesson_id": lid, "course": "Calculus 1", "due": "2026-12-01"})
     assert la.status_code == 200
     r3 = client.get("/assignments")
@@ -172,12 +184,12 @@ def test_student_assignment_hides_solution():
         "hints": [], "objective_tags": [], "difficulty": 1,
         "verification": "needs-review",
     }
-    s = client.post("/api/assignments/save", json={
+    s = teacher.post("/api/assignments/save", json={
         "topic": "Algebra", "title": "Leak test",
         "items": [a_item], "settings": {}})
     aid = s.json()["id"]
-    client.post(f"/api/assignments/{aid}/approve", json={})
-    a = client.post("/api/assign", json={
+    teacher.post(f"/api/assignments/{aid}/approve", json={})
+    a = teacher.post("/api/assign", json={
         "assignment_id": aid, "course": "Calculus 1", "due": "2026-12-01"})
     link = a.json()["link_id"]
     page = client.get(f"/myassignments/{link}")
@@ -196,13 +208,13 @@ def _publish_simple_assignment():
         "hints": [], "objective_tags": [], "difficulty": 1,
         "verification": "verified",
     }
-    aid = client.post("/api/assignments/save", json={
+    aid = teacher.post("/api/assignments/save", json={
         "topic": "Algebra", "title": "Check test", "items": [a_item],
         "solutions": {"q1": {"final_answer_latex": "x=1",
                              "solution_steps": ["x=1"], "explanation": ""}},
         "settings": {}}).json()["id"]
-    client.post(f"/api/assignments/{aid}/approve", json={})
-    return client.post("/api/assign", json={
+    teacher.post(f"/api/assignments/{aid}/approve", json={})
+    return teacher.post("/api/assign", json={
         "assignment_id": aid, "course": "Calculus 1",
         "due": "2026-12-01"}).json()["link_id"]
 

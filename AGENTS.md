@@ -8,7 +8,23 @@ MathPilot is an early-stage project exploring an AI Teaching Assistant and Learn
 
 Its purpose is to help students develop mathematical reasoning through guided, step-by-step tutoring; help instructors configure and support learning activities; and provide evidence-based insights into recurring student difficulties.
 
-**The project is currently in product definition and architecture planning. Do not assume that proposed features have been implemented.**
+**Status as verified on 2026-10-29 — a demo build exists; it is not a production system.** The sections below still describe approved intent, and features not listed here are still proposals.
+
+Implemented and exercised against the running app (`python -m pytest tests/` = 263 passed, 6 skipped):
+
+- A FastAPI + Jinja2 + SQLite application (`app/main.py`) serving both the student workspace (assignments, lessons, practice with the AI tutor) and the instructor workspace (authoring, drafts, materials, class insights).
+- Deterministic grading: student steps are checked by the SymPy verifier in `app/verifier.py`. The language model only words the reply; it never decides correctness. Unsupported or ambiguous expressions are reported as unverifiable rather than marked correct.
+- Instructor authoring uses generate-then-verify: AI-proposed questions pass a deterministic gate, then move draft → approved → published, and published content is frozen per delivery record so a later edit cannot change what a student already saw.
+- Tutor conversation state, hint ladder, "start this problem?" pending offers and rate limiting live in SQLite (`tutor_threads`, `tutor_pending`, `tutor_rate_hits`), so they survive a restart and are separate per student.
+- Instructor and authoring routes are role-gated server-side, not just hidden in the UI.
+
+Known limits — do not present these as done:
+
+- There is no real authentication or account system. Identity is an HMAC-signed `mp_viewer` cookie chosen from a synthetic demo roster (`/view-as`). Treat roles as a boundary that is only as strong as that cookie; never use real student records.
+- PostgreSQL, the Next.js/React frontend, and embeddings-based course retrieval from §4 are **open questions, not implemented**.
+- Per-topic mastery scores are not computed. The `mastery` table is created but never written, so no screen reports a mastery figure.
+- `/activity/{id}` still carries fixed chain-rule demo copy (problem text, approval badge, worked-steps list) that is not driven by the stored activity.
+- Several instructor analytics views show only what the event log supports; do not read them as proof of a misconception.
 
 ## 2. Default Rule: Plan Before Building
 

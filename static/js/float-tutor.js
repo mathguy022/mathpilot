@@ -83,8 +83,10 @@
     var div = document.createElement("div");
     div.className = "float-tutor-msg " + (role === "student" ? "student" : "tutor");
     if (role === "student") {
+      // Raw text in, so escape it here — but wrap bare LaTeX first, or a
+      // student's "\frac{a}{b}" sits in the bubble as backslash code.
       div.innerHTML = '<div class="bubble"></div>';
-      div.firstChild.textContent = html;
+      div.firstChild.innerHTML = esc((window.wrapBareLatex || String)(html));
     } else {
       div.innerHTML = '<span class="who" aria-hidden="true">&#129302;</span><div class="' + (cls || "bubble") + '">' + html + "</div>";
     }
@@ -347,7 +349,7 @@
     var clean = cleanPreview(val);
     if (!clean) { p.hidden = true; p.textContent = ""; return; }
     p.hidden = false;
-    p.textContent = clean;
+    p.innerHTML = esc((window.wrapBareLatex || String)(clean));
     if (window.renderMath) { try { window.renderMath(p); } catch (e) { /* plain text fallback */ } }
   }
 

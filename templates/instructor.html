@@ -11,8 +11,8 @@
 </div>
 <div class="grid g2" style="margin-top:16px">
   <div class="card"><h3>Student Progress (from attempts)</h3>
-    <table><tr><th>Student</th><th>Role</th><th>Mastery</th></tr>
-    {% for s in students %}<tr><td>👤 {{ s.name }}</td><td class="muted">{{ s.role }}</td><td>{% if s.id==1 and mastery %}{% for m in mastery %}<div>{{ m.topic }} <div class="bar"><i style="width:{{ m.score }}%"></i></div></div>{% endfor %}{% else %}<span class="muted">no attempts yet</span>{% endif %}</td></tr>{% endfor %}</table>
+    <table><tr><th>Student</th><th>Role</th><th>Verified steps</th></tr>
+    {% for s in students %}<tr><td>👤 {{ s.name }}</td><td class="muted">{{ s.role }}</td><td>{% set st = stats.get(s.id) %}{% if st %}<b>{{ st.0 }}</b>/{{ st.1 }} correct{% else %}<span class="muted">no attempts yet</span>{% endif %}</td></tr>{% endfor %}</table>
   </div>
   <div class="card"><h3>Where students struggle</h3>
     <p class="muted">Aggregated from the AI tutor's own event log. Rates cover only the steps SymPy could decide, and the denominator is always shown.</p>

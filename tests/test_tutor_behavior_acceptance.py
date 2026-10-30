@@ -14,10 +14,13 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch
 
 from app.db import SessionLocal, TutorEvent, TutorSession
-from app.main import (app, DEMO_HISTORY, FLOAT_TUTOR_HITS, FLOAT_TUTOR_PENDING,
-                      PRACTICE_STATE)
+from app.main import app
+from tests._identity import new_teacher_client  # noqa: E402
+from tests._tutor_state import wipe_tutor_state  # noqa: E402
 
 client = TestClient(app)
+# Authoring is instructor-only; student reads stay anonymous.
+teacher = new_teacher_client()
 
 MODEL = {"fn": None}         # the fake model for the current test
 WORDS = re.compile(r"\S+")
@@ -78,8 +81,7 @@ def _wipe():
         db.commit()
     finally:
         db.close()
-    FLOAT_TUTOR_HITS.clear()
-    FLOAT_TUTOR_PENDING.clear()
+    wipe_tutor_state()
 
 
 @pytest.fixture(autouse=True)
@@ -423,20 +425,25 @@ def test_15_praise_varies_across_five_correct_steps():
 
 # ---------------------------------------------------------------- 16
 def test_16_lessons_assignments_grading_and_views_are_untouched():
-    for path in ("/practice", "/lessons", "/assignments", "/instructor",
-                 "/instructor/dashboard", "/shared", "/"):
+    for path in ("/practice", "/lessons", "/assignments", "/shared", "/"):
         r = client.get(path)
         assert r.status_code in (200, 303, 307), (path, r.status_code)
+    # Instructor surfaces still render, for a signed-in teacher.
+    for path in ("/instructor", "/instructor/dashboard"):
+        r = teacher.get(path)
+        assert r.status_code in (200, 303, 307), (path, r.status_code)
 
-    # The spec forbids new tutor tables or columns: the schema is the same
-    # set of columns the instructor views already read.
+    # The tutor adds no tables. Its two tables' columns are pinned here, so a
+    # new one has to be a deliberate change reviewed against this assertion.
+    # "task" is the latest: without it the tutor only sees the expression and
+    # answers a different question than the one the student was set.
     from app.db import TutorEvent as TE, TutorSession as TS
 
     assert {c.name for c in TE.__table__.columns} == {
         "id", "session_id", "step_index", "student_input", "verdict",
         "hint_level", "created_at", "event_type", "tutor_reply"}
     assert {c.name for c in TS.__table__.columns} == {
-        "id", "student_id", "course_id", "problem_text",
+        "id", "student_id", "course_id", "problem_text", "task",
         "solution_plan_json", "status", "current_step_index", "total_steps",
         "hints_used", "total_misses", "graded_mode", "created_at",
         "completed_at"}
@@ -614,22 +621,19 @@ _pub = None
 
 
 def _publish():
-    r = client.post("/api/lessons/save", json={
+    r = teacher.post("/api/lessons/save", json={
         "course_id": 1, "topic": LESSON["topic"], "lesson": LESSON,
         "settings": {}})
     lid = r.json()["id"]
-    client.post(f"/api/lessons/{lid}/approve", json={"lesson": LESSON})
-    p = client.post("/api/publications", json={
+    teacher.post(f"/api/lessons/{lid}/approve", json={"lesson": LESSON})
+    p = teacher.post("/api/publications", json={
         "lesson_id": lid, "title": "Acceptance tutor pkg"})
     assert p.status_code == 200, p.text
     return lid, p.json()["link_id"]
 
 
 def _drop(lid, link):
-    for k in [k for k in list(PRACTICE_STATE) + list(DEMO_HISTORY)
-              if k.startswith(f"practice:{link}:")]:
-        PRACTICE_STATE.pop(k, None)
-        DEMO_HISTORY.pop(k, None)
+    wipe_tutor_state(f"practice:{link}:")
     from app.db import PracticeProgress
 
     db = SessionLocal()
@@ -639,8 +643,8 @@ def _drop(lid, link):
         db.commit()
     finally:
         db.close()
-    client.delete(f"/api/publications/{link}")
-    client.delete(f"/api/lessons/{lid}")
+    teacher.delete(f"/api/publications/{link}")
+    teacher.delete(f"/api/lessons/{lid}")
 
 
 def _attempt(text, link, item="practice-1"):

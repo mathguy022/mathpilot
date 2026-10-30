@@ -52,6 +52,16 @@ def get_course_options() -> list[dict[str, str]]:
             for key, val in SUPPORTED_COURSES.items()]
 
 
+def get_course_topics() -> dict[str, list[str]]:
+    """Label -> standard topics, for the dashboard's "Try: …" suggestions.
+
+    Rendered into the page rather than hand-copied into the template: the copy
+    is what let a retired course label keep appearing in the UI.
+    """
+    return {val["label"]: list(val["topics"])
+            for val in SUPPORTED_COURSES.values()}
+
+
 def course_context(course_label: str) -> str:
     """Curriculum hint line for generation prompts.
 

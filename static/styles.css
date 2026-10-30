@@ -353,6 +353,99 @@ a:hover { text-decoration: none; }
   font-weight: 700;
 }
 
+/* Sidebar attribution: which model this deployment answers with. Sits in the
+   sidebar's own column, below the cards, so it never overlaps navigation. */
+.provider-badge {
+  margin-top: 12px;
+  padding: 10px 11px;
+  border-radius: 12px;
+  border: 1px solid #cbe89f;
+  background: linear-gradient(135deg, #f5ffe2 0%, #e9fbf2 55%, #eaf2ff 100%);
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  box-shadow: var(--shadow-sm);
+}
+.provider-mark {
+  width: 25px;
+  height: 25px;
+  flex-shrink: 0;
+  border-radius: 7px;
+  background: linear-gradient(140deg, #8fd100 0%, #5aa000 55%, #2f7d32 100%);
+  color: #ffffff;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.provider-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.provider-kicker {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #4d7c0f;
+}
+.provider-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #76b900;
+  flex-shrink: 0;
+}
+.provider-chip {
+  margin-left: auto;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: #e2e8f0;
+  color: #475569;
+}
+.provider-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #10240f;
+  line-height: 1.3;
+  margin-top: 2px;
+}
+.provider-sub {
+  font-size: 10px;
+  color: #3f6b52;
+  line-height: 1.35;
+  margin-top: 1px;
+}
+/* Demo mode never calls the model, so the badge must not claim it does. */
+.provider-badge.is-demo {
+  background: #f8fafc;
+  border-color: var(--border);
+}
+.provider-badge.is-demo .provider-mark {
+  background: linear-gradient(140deg, #cbd5e1, #94a3b8);
+}
+.provider-badge.is-demo .provider-kicker {
+  color: var(--muted);
+}
+.provider-badge.is-demo .provider-dot {
+  background: #94a3b8;
+}
+.provider-badge.is-demo .provider-name {
+  color: var(--navy);
+}
+.provider-badge.is-demo .provider-sub {
+  color: var(--muted);
+}
+
 /* Main Content Area */
 .main-wrapper {
   flex: 1;
@@ -1602,6 +1695,18 @@ math-field:focus-within {
 }
 .question-body .question-prompt { margin-bottom: 6px; }
 .question-body .problem-math-hero { padding: 14px 0 18px; }
+/* The question in words: what the student is asked to do with the maths. */
+.question-task {
+  margin: -6px 0 16px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--purple-border);
+  border-radius: 0 8px 8px 0;
+  background: var(--purple-soft);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--navy);
+  text-align: center;
+}
 .work-hint {
   font-size: 13px;
   font-style: italic;

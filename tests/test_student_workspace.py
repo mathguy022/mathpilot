@@ -159,3 +159,55 @@ def test_instructor_review_request(chain_activity):
     r = client.post("/api/review-request", json={"activity_id": act_id})
     assert r.status_code == 200
     assert r.json()["status"] == "submitted"
+
+
+def test_dashboard_greets_the_signed_in_student_by_name():
+    """The dashboard greeting used to be a hard-coded name that was nobody's.
+
+    It read "Welcome back, Maya!" whoever was signed in, so the page
+    contradicted the identity in the header.
+    """
+    from app import auth
+    from app.db import SessionLocal, User
+
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.text
+    assert "Maya" not in body, "the greeting still names a hard-coded student"
+    assert "Welcome back, Alex!" in body, body[:400]
+
+    db = SessionLocal()
+    try:
+        maria = db.query(User).filter(User.name == "Maria Garcia").first()
+        assert maria is not None
+        client.cookies.clear()
+        client.cookies.set(auth.COOKIE, auth.issue(maria.id))
+        body = client.get("/").text
+        assert "Welcome back, Maria!" in body, body[:400]
+    finally:
+        client.cookies.clear()
+        db.close()
+
+
+def test_sidebar_credits_the_model_provider():
+    """The sidebar attributes the model this deployment answers with."""
+    from unittest.mock import patch
+    from app import config
+
+    with patch.object(config, "ai_configured", return_value=True):
+        body = client.get("/").text
+    assert "NVIDIA Nemotron" in body
+    assert "via Nebius Token Factory" in body
+    assert "Powered by" in body
+
+
+def test_sidebar_badge_says_demo_when_no_model_is_called():
+    """In demo mode no model runs, so the badge must not claim one does."""
+    from unittest.mock import patch
+    from app import config
+
+    with patch.object(config, "ai_configured", return_value=False):
+        body = client.get("/").text
+    assert "NVIDIA Nemotron" in body
+    assert "Powered by" not in body
+    assert "Demo" in body

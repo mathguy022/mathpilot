@@ -13,10 +13,14 @@ from unittest.mock import patch  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.db import Lesson, SessionLocal  # noqa: E402
+from app.db import Lesson, SessionLocal, TutorThread  # noqa: E402
 from app.main import app  # noqa: E402
+from tests._identity import new_teacher_client  # noqa: E402
+from tests._tutor_state import wipe_tutor_state  # noqa: E402
 
 client = TestClient(app)
+# Authoring is instructor-only; student reads stay anonymous.
+teacher = new_teacher_client()
 
 TOP_UP_ANSWER = "x=7"
 
@@ -50,15 +54,15 @@ def _lesson_payload(title, topic, practice_math):
 
 def _make_lesson(topic, practice_math, publish):
     payload = _lesson_payload(f"Practice set {topic}", topic, practice_math)
-    r = client.post("/api/lessons/save", json={
+    r = teacher.post("/api/lessons/save", json={
         "course_id": 1, "topic": topic, "lesson": payload, "settings": {}})
     assert r.status_code == 200, r.text
     lid = r.json()["id"]
-    a = client.post(f"/api/lessons/{lid}/approve", json={"lesson": payload})
+    a = teacher.post(f"/api/lessons/{lid}/approve", json={"lesson": payload})
     assert a.status_code == 200, a.text
     ref = None
     if publish:
-        p = client.post("/api/publications", json={"lesson_id": lid})
+        p = teacher.post("/api/publications", json={"lesson_id": lid})
         assert p.status_code == 200, p.text
         ref = p.json()["link_id"]
     else:
@@ -78,7 +82,7 @@ def _cleanup(lesson_ids, refs):
         db.close()
     for ref in refs:
         if not ref.startswith("lesson-"):
-            client.delete(f"/api/publications/{ref}")
+            teacher.delete(f"/api/publications/{ref}")
 
 
 def test_approved_unpublished_lesson_is_practisable():
@@ -96,7 +100,7 @@ def test_approved_unpublished_lesson_is_practisable():
 
 def test_draft_lesson_never_reaches_a_student():
     payload = _lesson_payload("Draft only", "prac-draft", ["x+1=2"])
-    lid = client.post("/api/lessons/save", json={
+    lid = teacher.post("/api/lessons/save", json={
         "course_id": 1, "topic": "prac-draft", "lesson": payload,
         "settings": {}}).json()["id"]
     try:
@@ -133,13 +137,63 @@ def test_items_top_up_to_five_and_cache_answers_server_side():
             # Nothing that reads like an answer key leaves the server.
             assert TOP_UP_ANSWER not in first.text
             for item in body["items"]:
+                # "task" is the instruction the item was set under ("Solve for
+                # x"), never its answer — the whole-body check above is what
+                # keeps an answer key off the wire.
                 assert set(item) <= {"item_id", "prompt_latex", "context",
-                                     "hints", "hints_enabled", "source"}
+                                     "hints", "hints_enabled", "source",
+                                     "task"}
             # Second visit is served from the lesson cache: no new AI call.
             second = client.post("/api/practice/items", json={"ref": ref})
             assert [i["item_id"] for i in second.json()["items"]] == \
                 [i["item_id"] for i in body["items"]]
             assert calls["n"] == 1
+    finally:
+        _cleanup([lid], [ref])
+
+
+def test_a_tutor_reply_never_pays_for_a_generation_round():
+    """One student message used to run the whole item generator.
+
+    Both /api/practice/attempt and /api/tutor/message resolved the item through
+    _practice_set, which tops the set up to five. A lesson of conceptual items
+    fails the SymPy gate every time, so the shortfall never closed and *every*
+    message paid ~15 seconds of model time. The browser gives up at 60s and the
+    student sees "the tutor is still working on that — send it once more".
+    """
+    lid, ref = _make_lesson("prac-nogen", ["x+3=10"], publish=True)
+    calls = {"n": 0}
+
+    def fake_generate(**kwargs):
+        calls["n"] += 1
+        return {"verified": [], "discarded": 0, "discard_reasons": [],
+                "truncated_notes": False}
+
+    try:
+        with patch("app.generate.generate_questions",
+                   side_effect=fake_generate), \
+             patch("app.config.ai_configured", return_value=True):
+            listed = client.post("/api/practice/items", json={"ref": ref})
+            assert listed.status_code == 200, listed.text
+            assert calls["n"] == 1, "listing a set may top it up once"
+            # The empty round is remembered, so the next visit is instant.
+            client.post("/api/practice/items", json={"ref": ref})
+            assert calls["n"] == 1, "a failed top-up must not repeat at once"
+
+            item_id = listed.json()["items"][0]["item_id"]
+            for url, payload in [
+                ("/api/practice/attempt",
+                 {"ref": ref, "item_id": item_id, "response": "x=7",
+                  "course": 1}),
+                ("/api/tutor/message",
+                 {"message": "x=7",
+                  "pageContext": {"type": "practice", "ref": ref,
+                                  "item_id": item_id, "mode": "practice",
+                                  "course": 1}}),
+            ]:
+                r = client.post(url, json=payload)
+                assert r.status_code == 200, r.text
+                assert calls["n"] == 1, f"{url} ran the item generator"
     finally:
         _cleanup([lid], [ref])
 
@@ -188,7 +242,7 @@ def test_progress_autosaves_draft_and_survives_reload():
         _cleanup([lid], [ref])
 
 
-def test_hint_ladder_is_not_reset_by_a_reload():
+def test_hint_ladder_survives_a_restart():
     lid, ref = _make_lesson("prac-hints", ["x+3=10"], publish=True)
     try:
         with patch("app.nebius.float_chat", return_value=None):
@@ -196,16 +250,20 @@ def test_hint_ladder_is_not_reset_by_a_reload():
                 "ref": ref, "item_id": "practice-1",
                 "response": "I'm stuck — give me a hint"})
             assert first.json()["hintLevel"] == 1, first.text
-            # A reload clears the in-memory ladder; the saved row must not.
-            from app.main import DEMO_HISTORY, PRACTICE_STATE
-
-            for k in [k for k in list(PRACTICE_STATE) + list(DEMO_HISTORY)
-                      if k.startswith(f"practice:{ref}:")]:
-                PRACTICE_STATE.pop(k, None)
-                DEMO_HISTORY.pop(k, None)
+            # The rung the student reached is a row, not process memory: read
+            # it back through a separate session, the way a new worker would.
+            db = SessionLocal()
+            try:
+                row = db.query(TutorThread).filter(
+                    TutorThread.key.startswith(
+                        f"practice:{ref}:practice-1:")).first()
+                assert row is not None and row.hints == 1, row
+            finally:
+                db.close()
             second = client.post("/api/practice/attempt", json={
                 "ref": ref, "item_id": "practice-1",
                 "response": "another hint please"})
             assert second.json()["hintLevel"] == 2, second.text
     finally:
+        wipe_tutor_state(f"practice:{ref}:")
         _cleanup([lid], [ref])

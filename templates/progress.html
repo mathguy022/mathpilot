@@ -2,35 +2,42 @@
 {% block title %}My Progress{% endblock %}
 {% block content %}
 <div class="page-header" style="margin-bottom:20px;">
-  <div class="breadcrumb">Calculus I / My Progress</div>
+  <div class="breadcrumb">Student Workspace / My Progress</div>
   <h1 class="page-title">Track Your Progress</h1>
-  <p class="page-subtitle">Evidence-based mastery scores, recent attempts, and verified reasoning milestones.</p>
+  <p class="page-subtitle">Every number below is counted from your own SymPy-checked step attempts.</p>
 </div>
 
+{% set total = attempts|length %}
+{% set rate = (100 * verified / total) if total else 0 %}
 <div class="grid g2">
   <div class="card">
-    <h3 style="margin-top:0;">Calculus Concept Mastery</h3>
-    {% for m in mastery %}
+    <h3 style="margin-top:0;">Verified Reasoning</h3>
+    {% if attempts %}
     <div style="margin-bottom:14px;">
       <div style="display:flex; justify-content:space-between; font-size:14px; font-weight:600; margin-bottom:4px;">
-        <span>{{ m.topic }}</span>
-        <span>{{ m.score|round(0) }}%</span>
+        <span>Steps graded correct</span>
+        <span>{{ rate|round(0)|int }}%</span>
       </div>
-      <div class="bar"><i style="width:{{ m.score }}%; background:var(--purple-primary);"></i></div>
+      <div class="bar"><i style="width:{{ rate }}%; background:var(--purple-primary);"></i></div>
     </div>
+    <p class="muted" style="font-size:13px;">{{ verified }} of {{ total }} attempts on this account. A step only counts as correct when the deterministic checker accepts it, so unverifiable work is excluded from the numerator, not rounded up.</p>
     {% else %}
-    <p class="muted">No mastery records yet.</p>
-    {% endfor %}
+    <p class="muted">No checked attempts yet — scores appear after your first step is graded.</p>
+    {% endif %}
   </div>
 
   <div class="card">
     <h3 style="margin-top:0;">Recent Learning Milestones</h3>
     <div style="display:flex; flex-direction:column; gap:12px; margin-top:14px;">
+      {% set last_correct = attempts | selectattr('verdict', 'equalto', 'correct') | first %}
       <div style="display:flex; gap:12px; align-items:center; padding:10px; background:var(--purple-soft); border-radius:10px;">
         <span style="font-size:22px;">🏅</span>
         <div>
-          <div style="font-weight:700; font-size:14px;">Verified Chain Rule Step</div>
-          <div class="muted" style="font-size:12px;">Successfully identified inner function $u = 3x + 1$</div>
+          <div style="font-weight:700; font-size:14px;">Latest verified step</div>
+          <div class="muted" style="font-size:12px;">
+            {% if last_correct %}Step {{ last_correct.step_index + 1 }} of activity {{ last_correct.activity_id }}, marked correct{% if last_correct.created_at %} on {{ last_correct.created_at.strftime('%b %d, %H:%M') }}{% endif %}
+            {% else %}No step has been graded correct yet.{% endif %}
+          </div>
         </div>
       </div>
       <div style="display:flex; gap:12px; align-items:center; padding:10px; background:#f8fafc; border-radius:10px; border:1px solid #e2e8f0;">

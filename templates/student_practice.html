@@ -35,6 +35,7 @@
     <div class="question-body">
       <div class="question-prompt" id="q-context">Guided practice</div>
       <div class="problem-math-hero" id="q-prompt">Loading…</div>
+      <div class="question-task" id="q-task" hidden></div>
     </div>
 
     <h3 class="work-head">Your work</h3>
@@ -167,7 +168,10 @@ function bubble(who, html, cls){ const box=document.getElementById('tutor-chat')
  box.appendChild(d); box.scrollTop=box.scrollHeight;
  if(window.renderMath) window.renderMath(d); return d; }
 function say(html, cls){ return bubble('tutor', html, cls); }
-function ask(text){ return bubble('student', esc(text)); }
+// The student's own line goes through the same bare-LaTeX wrap the server
+// applies to its replies, otherwise "\frac{a}{b}" shows up as code.
+function mathText(t){ const wrap=window.wrapBareLatex||String; return esc(wrap(t)); }
+function ask(text){ return bubble('student', mathText(text)); }
 function typing(){ return bubble('tutor','<span class="tutor-typing"><i></i><i></i><i></i></span>'); }
 async function post(url, body, ms=60000){ const ctl=new AbortController();
  const timer=setTimeout(()=>ctl.abort(), ms);
@@ -207,7 +211,7 @@ function renderWork(){ const box=document.getElementById('work-list'); if(!box) 
  const it=cur(); if(!it){ box.innerHTML=''; return; }
  const rows=(WORK[it.item_id]||[]); const p=prog();
  if(p.status==='solved'){ box.innerHTML='<li class="work-row solved"><span class="work-n">✔</span><div><b>Done</b>'+
-   (rows.length?'<p class="muted">'+esc(rows[rows.length-1].text)+'</p>':'')+
+   (rows.length?'<p class="muted">'+mathText(rows[rows.length-1].text)+'</p>':'')+
    '<p class="work-good">Verified by the math checker. Tap Next question for another one.</p></div></li>'; return; }
  if(p.status==='skipped'){ box.innerHTML='<li class="work-row skipped"><span class="work-n">→</span><div><b>Skipped</b>'+
    '<p class="muted">Come back any time — it stays in this set.</p></div></li>'; return; }
@@ -215,7 +219,7 @@ function renderWork(){ const box=document.getElementById('work-list'); if(!box) 
    '<b>Start with the first move.</b><p class="muted">Type one line of working, then press Check step. '+
    'Stuck? Ask for a hint — it gives you a direction, never the answer.</p></div></li>'; return; }
  box.innerHTML=rows.map((r,i)=>'<li class="work-row '+esc(r.verdict)+'"><span class="work-n">'+(i+1)+'</span>'+
-   '<div><b>'+esc(r.text)+'</b><p class="'+(r.verdict==='correct'?'work-good':'work-bad')+'">'+esc(r.note)+'</p></div></li>').join(''); }
+   '<div><b>'+mathText(r.text)+'</b><p class="'+(r.verdict==='correct'?'work-good':'work-bad')+'">'+esc(r.note)+'</p></div></li>').join(''); }
 function renderMeter(){ const box=document.getElementById('hint-meter'); if(!box) return;
  const used=Math.min(HINT_BUDGET, prog().hints||0);
  box.innerHTML=Array.from({length:HINT_BUDGET},(_,i)=>
@@ -314,7 +318,10 @@ async function sendChat(text){ text=String(text||'').trim(); if(!text||BUSY) ret
  setBusy(true); const t=typing();
  try{ let j;
   if(MODE==='steps') j=await post('/api/tutor/message',{message:text.slice(0,500),
-    pageContext:{type:'general', course:COURSE, mode:'practice'}});
+    // The item id, not the problem text: the server resolves the question
+    // the student is actually looking at and keeps its wording.
+    pageContext:{type:'practice', course:COURSE, mode:'practice',
+      ref:REF, item_id:(cur()||{}).item_id||''}});
   else j=await post('/api/practice/attempt',{ref:REF,
     item_id:(cur()||{}).item_id||'', response:text.slice(0,500), course:COURSE});
   t.remove(); render(j, text);
@@ -367,7 +374,7 @@ function renderQ(){ stepFeedback(null);
   document.getElementById('work-list').innerHTML=''; return; }
  QI=Math.max(0,Math.min(QI,ITEMS.length-1)); const it=ITEMS[QI];
  document.getElementById('q-context').textContent=it.context||'Guided practice';
- setPrompt(it.prompt_latex);
+ setPrompt(it.prompt_latex); setTask(it.task);
  const p=prog();
  clearInput();
  if(p.draft){ if(USE_MATH_INPUT){ try{ mathBox().setValue(p.draft); }catch(e){} }
@@ -377,6 +384,18 @@ function setPrompt(latex){ const el=document.getElementById('q-prompt');
  const t=String(latex||'').trim();
  if(!t){ el.textContent='No question text — send your working in the chat and I will guide the next move.'; return; }
  el.innerHTML='$$'+esc(t)+'$$'; if(window.renderMath) window.renderMath(el); }
+// The task says what is being asked. The same expression can mean very
+// different questions (find the domain? solve it?), so the student and the
+// tutor both need the words of the original question.
+function setTask(task){ const el=document.getElementById('q-task'); if(!el) return;
+ const t=String(task||'').trim(), p=String((cur()||{}).prompt_latex||'').trim();
+ if(!t || t===p){ el.hidden=true; el.innerHTML=''; return; }
+ let text=t;
+ const i=text.indexOf('$');
+ if(i>0 && text.slice(i).replace(/\$/g,'').trim()===p) text=text.slice(0,i);
+ if(text.trim().split(/\s+/).length<2){ text=t; }   // "Find $x$" -> keep the whole question
+ if(text.trim().split(/\s+/).length<2){ el.hidden=true; el.innerHTML=''; return; }
+ el.hidden=false; el.innerHTML=esc(text); if(window.renderMath) window.renderMath(el); }
 function gotoQ(i){ if(i<0||i>=ITEMS.length) return; QI=i; MODE='item'; setMode(); renderQ(); }
 function moveQ(d){ const next=QI+d; if(next<0||next>ITEMS.length-1) return;
  saveNow(); gotoQ(next); }

@@ -202,11 +202,16 @@ def turn_context(*, problem: str = "", step: dict | None = None,
                  verdict: str = "", hint_level: int = 0, intent: str = "",
                  mode: str = "practice", first_name: str = "",
                  notation: str = "", plan: list[dict] | None = None,
-                 student_answer: str = "", repeats: bool = False) -> str:
+                 student_answer: str = "", repeats: bool = False,
+                 task: str = "") -> str:
     """The per-turn facts the model is told it receives (spec section 2)."""
     step = step or {}
     lines = [
         f"problem: {problem or '(none open)'}",
+    ]
+    if task:
+        lines.append(f"what the student is asked to do: {task}")
+    lines += [
         "hidden solution plan: " + (
             " | ".join(str(s.get("instruction", ""))[:60]
                        for s in (plan or [])) or "(none)"),

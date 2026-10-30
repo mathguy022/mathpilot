@@ -87,6 +87,12 @@ PLAN_SYSTEM = (
     "identity_step, conceptual. Expected values must be CAS-parsable "
     "(SymPy syntax: ** for powers, cos(x) with parentheses, pi for π). "
     "Never include a full worked solution outside the expected fields."
+    " Every step must be a DIFFERENT action: never repeat a step, and never "
+    "write two steps that say the same thing in different words. If the "
+    "task is not 'solve for x' (finding a domain, a range, a quadrant, a "
+    "transformation), the steps must do THAT task, and the final step uses "
+    "check_type 'conceptual' with the answer written plainly, such as "
+    "'x >= 4'. Do not repeat the problem statement as an instruction."
 )
 
 NORMALIZER_SYSTEM = (
@@ -105,17 +111,22 @@ CONCEPT_SYSTEM = (
 )
 
 
-def generate_plan(problem: str) -> dict | None:
+def generate_plan(problem: str, task: str = "") -> dict | None:
     """LLM plan fallback for problems no SymPy template covers.
 
     Returns the parsed plan dict or None. The caller must validate the
     plan with float_plan.validate_plan before use — never trusted blind.
+    The task (what the student was actually asked to do) is passed with it:
+    without it the plan answers a different question than the one set.
     """
     import json as _json
 
+    ask = f"Problem: {problem}"
+    if task:
+        ask += f"\nWhat the student must do with it: {task}"
     messages = [
         {"role": "system", "content": PLAN_SYSTEM},
-        {"role": "user", "content": f"Problem: {problem}"},
+        {"role": "user", "content": ask},
     ]
     try:
         raw = _chat(config.NEBIUS_MATH_MODEL, messages, max_tokens=1200)

@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch
 
 from app.db import SessionLocal, TutorEvent, TutorSession
-from app.main import app, FLOAT_TUTOR_HITS
+from app.main import app
+from tests._identity import sign_in_as, sign_out
+from tests._tutor_state import wipe_tutor_state
 
 client = TestClient(app)
 
@@ -32,7 +34,7 @@ def _wipe():
         db.commit()
     finally:
         db.close()
-    FLOAT_TUTOR_HITS.clear()
+    wipe_tutor_state()
 
 
 def _msg(text, ctx=None):
@@ -63,11 +65,13 @@ def test_01_widget_placement():
         r = client.get(route)
         assert r.status_code == 200, route
         assert 'id="float-tutor-btn"' in r.text, route
+    sign_in_as(client, "instructor")
     for route in ["/instructor/dashboard", "/instructor", "/tutor",
                   "/practice"]:
         r = client.get(route)
         assert r.status_code == 200, route
         assert 'id="float-tutor-btn"' not in r.text, route
+    sign_out(client)
 
 
 # 2. "10 = 3x + 1" -> Step 1 "subtract 1", never the result.
@@ -256,10 +260,14 @@ def test_15_keyboard_a11y():
 
 # 16. Existing behavior untouched: lessons/grading/instructor routes.
 def test_16_existing_routes_unchanged():
-    for route in ["/lessons", "/assignments", "/instructor/dashboard",
-                  "/instructor", "/practice", "/help"]:
+    for route in ["/lessons", "/assignments", "/practice", "/help"]:
         r = client.get(route)
         assert r.status_code == 200, route
+    sign_in_as(client, "instructor")
+    for route in ["/instructor/dashboard", "/instructor"]:
+        r = client.get(route)
+        assert r.status_code == 200, route
+    sign_out(client)
     r = client.get("/health")
     assert r.status_code == 200
     # Lesson renderer + assignment submit endpoints still exist.
@@ -280,7 +288,10 @@ def test_llm_plan_is_cas_validated_without_calling_itself():
         {"action": "Evaluate", "instruction": "Substitute x = 2.",
          "expected_expression": "4"},
     ]
-    problem = r"\lim_{x \to 2} \frac{x^2 - 4}{x - 2}"
+    # Outside every template, and its answer is still re-derivable, so the
+    # plan's final answer can be checked. (A limit would do, but the limit
+    # template now covers those.)
+    problem = "2^x = 16"
     with patch.object(config, "ai_configured", return_value=True), \
          patch("app.nebius.generate_plan", return_value={"steps": steps}):
         plan, source = float_plan.build_plan(problem)
@@ -293,3 +304,82 @@ def test_llm_plan_is_cas_validated_without_calling_itself():
          patch("app.nebius.generate_plan", return_value={"steps": wrong}):
         plan, source = float_plan.build_plan(problem)
     assert (plan, source) == (None, "none")
+
+
+def test_differentiate_phrasing_reaches_the_derivative_template():
+    """The dispatcher used to strip the word the template looks for.
+
+    build_plan removed a leading "differentiate" before dispatching, but the
+    derivative template recognises a differentiation problem by that keyword,
+    so "differentiate f(x)" never reached it while "d/dx f(x)" did.
+    """
+    from app import float_plan
+
+    for phrasing in ("differentiate x^3*sin(x)", "d/dx x^3*sin(x)",
+                     "Find the derivative of x^3*sin(x)",
+                     "the derivative of x^3*sin(x)"):
+        plan, source = float_plan.build_plan(phrasing, allow_llm=False)
+        assert source == "derivative", f"{phrasing}: {source}"
+        assert plan, phrasing
+
+
+def test_bracketed_equation_opens_the_bracket_first():
+    """A step has to name a term the student can see in the problem.
+
+    "0.4x - 0.2(3 - x) = 1.8" planned as "Add 3/5 to both sides", but the
+    -3/5 only appears once the bracket is multiplied out, so step 1 asked
+    for a move against a term that was not there yet.
+    """
+    from app import float_plan
+
+    for problem in ("0.4x - 0.2(3 - x) = 1.8", "5(x-2) = 15",
+                    "x - (2 - x) = 4"):
+        plan, source = float_plan.build_plan(problem, allow_llm=False)
+        assert source == "linear", problem
+        assert "bracket" in plan[0]["instruction"].lower(), (
+            problem, plan[0]["instruction"])
+        # Every later move works on the multiplied-out line.
+        for step in plan[1:]:
+            assert "(" not in step["expected_expression"].split("=")[0], step
+
+
+def test_already_collected_equations_keep_their_first_move():
+    """No multiply-out step where the problem is already one line per side."""
+    from app import float_plan
+
+    for problem, first in (("3x-9=0", "Add 9"), ("2x+5=13", "Subtract 5"),
+                           ("9 = 3x", "Divide"), ("4 = 2x", "Divide"),
+                           ("x/2 + 1 = 4", "Subtract 1"),
+                           (r"\frac{x}{2} + 1 = 4", "Subtract 1")):
+        plan, source = float_plan.build_plan(problem, allow_llm=False)
+        assert source == "linear", problem
+        assert plan[0]["instruction"].startswith(first), (
+            problem, plan[0]["instruction"])
+
+
+def test_multi_term_fraction_splits_before_a_term_is_undone():
+    r"""\frac{t+2}{4} - \frac{2t-1}{3} = \frac{1}{2} collected is 5/6 - 5t/12,
+    so "Subtract 5/6 from both sides" named a constant that only appears once
+    the fractions are split apart."""
+    from app import float_plan
+
+    problem = r"\frac{t+2}{4} - \frac{2t-1}{3} = \frac{1}{2}"
+    plan, source = float_plan.build_plan(problem, allow_llm=False)
+    assert source == "linear", source
+    assert "fraction" in plan[0]["instruction"].lower(), plan[0]["instruction"]
+    assert plan[1]["instruction"].startswith("Subtract 5/6"), plan[1]
+
+
+def test_student_math_is_delimited_before_it_reaches_the_bubble():
+    r"""A student typing \frac{x^2-9}{x-3} used to see backslash code.
+
+    KaTeX only typesets delimited math. The server wraps the bare LaTeX in its
+    own replies (verifier.wrap_bare_latex) but never sees the student's message
+    on the way back, so both chat surfaces have to run the same rule client-side
+    before inserting the bubble.
+    """
+    renderer = client.get("/static/js/math-render.js").text
+    assert "window.wrapBareLatex" in renderer
+    assert '"$"' in renderer, "the wrap has to emit $ delimiters"
+    assert "wrapBareLatex" in client.get("/static/js/float-tutor.js").text
+    assert "wrapBareLatex" in client.get("/practice").text

@@ -16,6 +16,45 @@
   }
   window.renderMath = renderMath; // call after inserting content manually
 
+  // Client mirror of the server's wrap_bare_latex(). The server only touches
+  // its own replies, so a student's message — "g(x) = \frac{x^2 - 9}{x - 3}"
+  // typed into the chat — reached the bubble as literal backslash code.
+  const LATEX_CMD = /\\[a-zA-Z]+/;
+  const LATEX_RUN = /\\[a-zA-Z]+(?:\s*\{(?:[^{}]|\{[^{}]*\})*\}){0,2}/g;
+  const DELIMITED = /(\$\$[\s\S]*?\$\$|\$[^$]*\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\))/g;
+
+  const MATH_WORDS = /^(?:sin|cos|tan|cot|sec|csc|log|ln|lim|max|min|det|pi|theta|arcsin|arccos|arctan|sinh|cosh|tanh)$/i;
+
+  function isMathLine(piece) {
+    // A line of working rather than a sentence about it: strip the commands
+    // and the operators, and call it math only if no prose word survives.
+    // Short tokens ("2t", "x2") are variables, not English.
+    const prose = piece.replace(/\\[a-zA-Z]+/g, " ")
+      .replace(/[{}()\[\]=+\-*/^.,;:<>!|_\\'"]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !MATH_WORDS.test(w));
+    return prose.length === 0;
+  }
+
+  function wrapBareLatex(text) {
+    const s = String(text == null ? "" : text);
+    if (!LATEX_CMD.test(s)) return s;
+    return s.split(DELIMITED).map(function (piece, i) {
+      if (i % 2 || !LATEX_CMD.test(piece)) return piece; // already math
+      // A stray unbalanced $ would break the span, so only take the whole line
+      // when the dollar signs all sit inside already-delimited pieces.
+      if (isMathLine(piece) && !piece.includes("$")) {
+        const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(piece);
+        return m[1] + "$" + m[2] + "$" + m[3];
+      }
+      // Prose around the math: delimit each command run on its own.
+      return piece.replace(LATEX_RUN, function (run) {
+        return run.replace(/\s/g, "").length > 1 ? "$" + run + "$" : run;
+      });
+    }).join("");
+  }
+  window.wrapBareLatex = wrapBareLatex;
+
   // markdown-lite: the minimal subset lesson bodies actually use. Headings,
   // **bold**, `code`, and "- " / "1. " lists become real HTML; $...$ spans are
   // left alone so KaTeX can pick them up afterwards.

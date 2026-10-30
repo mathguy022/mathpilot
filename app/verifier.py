@@ -237,11 +237,23 @@ def _items_equal(s_item, e_item) -> bool:
     return False
 
 
-def _parse_solution_set(text: str) -> list:
-    """Parse 'u = 1/2 or u = 1' / '{0, pi/3}' / 'x=2, x=3' into values."""
+def _normalize_answer_separators(text: str) -> str:
+    """Rewrite the ways one answer can list several values into commas.
+
+    'x = 2 or x = 5' is two answers, not one answer with a stray tail. Without
+    this the parser kept only the last value and silently dropped the rest,
+    so a student who wrote both correct roots was told they were wrong.
+    """
     t = (text or "").strip().strip('"').strip("'")
     t = re.sub(r"^\{\s*(.*?)\s*\}$", r"\1", t)  # {a, b} -> a, b
     t = re.sub(r"\bor\b", ",", t, flags=re.IGNORECASE)
+    t = t.replace(";", ",")
+    return t
+
+
+def _parse_solution_set(text: str) -> list:
+    """Parse 'u = 1/2 or u = 1' / '{0, pi/3}' / 'x=2, x=3' into values."""
+    t = _normalize_answer_separators(text)
     parts = _split_top_level(t)
     vals = []
     for p in parts:
@@ -643,16 +655,21 @@ def _eq_objects(prompt: str) -> tuple[list, list]:
 
 
 def _parse_answer_set(answer: str) -> tuple[list, str | None]:
-    """Parse LLM answer into a list of assignment dicts or expressions.
+    """Parse a student's answer into a list of assignment dicts or expressions.
 
     Returns (items, error). For 'x=2, y=3' items are {x: 2, y: 3};
     for bare 'x=2, x=3' items are [2, 3] with implied single variable.
     """
     try:
-        parts = _split_top_level(
-            answer.split("=", 1)[1] if answer.count("=") == 0 else answer)
-        if answer.count("=") == 0:
-            return [_parse_single(p) for p in parts], None
+        text = _normalize_answer_separators(answer)
+        if "=" not in text:
+            # A bare expression is not a solution set. Reported as
+            # unparseable so the caller falls back to comparing the attempt
+            # with the item itself, which is what a factoring step needs.
+            return [], "answer is not a value assignment"
+        parts = _split_top_level(text)
+        if not parts:
+            return [], "empty answer"
         assigns: dict[str, list] = {}
         for part in parts:
             if "=" not in part:
@@ -661,6 +678,11 @@ def _parse_answer_set(answer: str) -> tuple[list, str | None]:
             var = normalize_math(var).strip()
             if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", var):
                 return [], f"bad variable name: {var!r}"
+            if "=" in val:
+                # A second '=' means the value is itself an equation. Parsing
+                # it would keep only its right-hand side and lose the other
+                # answers, so refuse instead of grading a partial answer.
+                return [], f"mixed answer format: {part!r}"
             assigns.setdefault(var, []).append(_parse_single(val))
         # Single variable with several values -> value list.
         if len(assigns) == 1:
@@ -964,7 +986,11 @@ def canonical_answer(problem: str) -> list[str]:
         return []
     try:
         eqs, syms = _eq_objects(text)
-        if not eqs or not syms or len(eqs) > 1:
+        if not eqs or not syms or len(eqs) > 1 or len(syms) > 1:
+            # One equation in one unknown has a solution set. A function
+            # definition ("h(t) = -16t^2 + 32t + 5") parses as an equation
+            # in two symbols and solves to a parametric family, which is not
+            # an answer to anything.
             return []
         return [display_math(sp.simplify(sol))
                 for sol in sp.solve(eqs[0], syms, dict=False)]

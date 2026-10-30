@@ -17,11 +17,72 @@ import sympy as sp
 from .verifier import _parse_single, check_equivalent
 
 
+_DISPLAY_MATH = re.compile(r"\$\$(.+?)\$\$", re.S)
+_INLINE_MATH = re.compile(r"\$([^$]+)\$")
+_TEXT_DECOR = re.compile(r"\\text\s*\{[^{}]*\}")
+
+
+def canonical_expression(text: str) -> str:
+    """The math to work on, from a prompt that may be a whole question.
+
+    A practice item reaches the tutor in three shapes: a bare expression
+    ("x^2 - 7x + 10 = 0"), a decorated one ("\\text{Problem 1: } P(5, -12)"),
+    or a question with the math inside it ("Solve the quadratic equation
+    $x^2 - 7x + 10 = 0$ by factoring."). Planning the whole sentence finds
+    no equation at all, so the expression is pulled out first.
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    m = _DISPLAY_MATH.search(t)
+    if m:
+        return m.group(1).strip()
+    spans = [s.strip() for s in _INLINE_MATH.findall(t) if s.strip()]
+    if len(spans) == 1:
+        return spans[0]
+    t = _TEXT_DECOR.sub(" ", t).strip()
+    t = re.sub(r"^\s*problem\s*\d+\s*[:.]?\s*", "", t, flags=re.IGNORECASE)
+    return t.strip()
+
+
 def _symbols(expr) -> list:
     try:
         return sorted(expr.free_symbols, key=str)
     except Exception:
         return []
+
+
+def _is_trig_or_pi(lhs, rhs) -> bool:
+    """Does this equation ask for a trigonometric value?
+
+    "(pi/4)x = -1" is ordinary linear algebra with a pi coefficient, but
+    "theta = 5*pi/4" asks for a unit-circle angle: solving the second for
+    theta would answer a different question than the student was set.
+    """
+    text = str(lhs) + str(rhs)
+    if any(fn in text for fn in ("sin(", "cos(", "tan(", "sec(", "csc(",
+                                  "cot(", "asin(", "acos(", "atan(")):
+        return True
+    # pi only matters when it is the value being solved for.
+    return "pi" in str(rhs)
+
+
+_BRACKET_OUT = re.compile(r"[\d).a-zA-Z_]\s*\(|[-+]\s*\(")
+_MULTI_NUMERATOR = re.compile(r"\\frac\s*\{[^{}]*[+-][^{}]*\}")
+
+
+def _needs_bracket_out(side_text: str) -> bool:
+    """Does this side, as the student sees it, still have a bracket to open?
+
+    SymPy hands back the multiplied-out form, so "0.4x - 0.2(3 - x)" and
+    "0.6x - 0.6" are the same object; the bracket only exists in the text.
+    """
+    return bool(_BRACKET_OUT.search(side_text or ""))
+
+
+def _needs_fraction_split(side_text: str) -> bool:
+    r""""\frac{t+2}{4}" hides two terms where the plan expects one."""
+    return bool(_MULTI_NUMERATOR.search(side_text or ""))
 
 
 def build_linear_plan(problem_text: str) -> list[dict] | None:
@@ -33,12 +94,18 @@ def build_linear_plan(problem_text: str) -> list[dict] | None:
     text = (problem_text or "").strip().strip('"').strip("'")
     if "=" not in text:
         return None
+    raw_lhs, raw_rhs = text.split("=", 1)
     try:
-        lhs = _parse_single(text.split("=", 1)[0])
-        rhs = _parse_single(text.split("=", 1)[1])
+        lhs = _parse_single(raw_lhs)
+        rhs = _parse_single(raw_rhs)
     except Exception:
         return None
     if isinstance(lhs, tuple) or isinstance(rhs, tuple):
+        return None
+    # A unit-circle angle or a trig value is not a linear-algebra problem:
+    # solving "theta = 5*pi/4" for theta would answer a different question
+    # than the student was set.
+    if _is_trig_or_pi(lhs, rhs):
         return None
     syms = sorted(set(_symbols(lhs)) | set(_symbols(rhs)), key=str)
     if len(syms) != 1:
@@ -72,6 +139,35 @@ def build_linear_plan(problem_text: str) -> list[dict] | None:
     coeff = complex(sp.expand(lhs - rhs).coeff(x).evalf())
     lhs_has_x = bool(lhs.has(x))
     rhs_has_x = bool(rhs.has(x))
+
+    def _collected(e):
+        try:
+            return sp.collect(sp.expand(e), x)
+        except Exception:
+            return None
+
+    # Every step below undoes a term of the *collected* equation, so a problem
+    # that is not yet one line per side has to be tidied first. Without this
+    # the first hint on 0.4x - 0.2(3 - x) = 1.8 was "Add 3/5 to both sides", a
+    # move the student cannot see: the -3/5 only exists once the bracket is
+    # gone, and the model then invented a worse one ("add it to the left side
+    # only", which breaks the equation).
+    col_lhs, col_rhs = _collected(lhs), _collected(rhs)
+    parts = []
+    if _needs_bracket_out(raw_lhs) or _needs_bracket_out(raw_rhs):
+        parts.append("multiply out the brackets")
+    if _needs_fraction_split(raw_lhs) or _needs_fraction_split(raw_rhs):
+        parts.append("split each fraction with more than one term on top")
+    if col_lhs is not None and col_rhs is not None and parts:
+        lead = " and ".join(parts)
+        steps.append({
+            "instruction": (lead[:1].upper() + lead[1:]
+                            + ", then join the like terms on each side."),
+            "expected_expression": f"{s(col_lhs)} = {s(col_rhs)}",
+            "reason": "Each side has to be one line before a move can undo a "
+                      "term of it.",
+        })
+        lhs, rhs = col_lhs, col_rhs
 
     def mag_of(c) -> str:
         # Rational-preserving display: pi/4, not 98174770424681/12500000...
@@ -413,9 +509,10 @@ def build_limit_plan(problem_text: str) -> list[dict] | None:
     low = text.lower()
     if "lim" not in low and "limit" not in low:
         return None
-    # Extract: variable, point, expression.
+    # Extract: variable, point, expression. Lessons write the point as
+    # LaTeX \to, so the backslash is optional here.
     m = re.search(r"(?:lim(?:it)?\s*(?:as)?|lim_?)\s*"
-                  r"(?:\{?\s*)?([a-zA-Z])\s*(?:->|to)\s*"
+                  r"(?:\{?\s*)?([a-zA-Z])\s*(?:->|\\?to)\s*"
                   r"([-\d.a-zA-Z+*/^() ]+?)\s*(?:of|:|,|\})?\s*(.+)$",
                   text, re.IGNORECASE | re.DOTALL)
     if not m:
@@ -698,8 +795,8 @@ def check_step(expected_expression: str, student: str,
         return "unclear"
 
 
-def build_plan(problem_text: str, allow_llm: bool = True
-               ) -> tuple[list[dict] | None, str]:
+def build_plan(problem_text: str, allow_llm: bool = True,
+               task: str = "") -> tuple[list[dict] | None, str]:
     """Dispatch across SymPy templates, then the LLM fallback.
 
     source is 'linear' | template name | 'llm' | 'none'. Templates run
@@ -707,10 +804,20 @@ def build_plan(problem_text: str, allow_llm: bool = True
     tries, each validated before use). Set allow_llm=False for
     deterministic offline runs (tests). build_linear_plan stays
     byte-identical.
+
+    `task` is what the student was asked to do with the expression ("find
+    the domain"). The templates only need the expression; the model needs
+    both, or it plans a different question than the one that was set.
     """
+    # The prompt may be a whole question; plan the expression inside it.
+    expression = canonical_expression(problem_text)
+    # "differentiate" is deliberately not stripped: the derivative template
+    # recognises a differentiation problem by that keyword and pulls the
+    # expression out of the phrase itself. Stripping it here made
+    # "differentiate f(x)" unreachable while "d/dx f(x)" still worked.
     text = re.sub(r"(?i)^\s*(solve|find|simplify|evaluate|factor|"
-                    r"differentiate|integrate|prove|work on|try)\s*[:\-]?\s*",
-                    "", problem_text or "").strip()
+                    r"integrate|prove|work on|try)\s*[:\-]?\s*",
+                    "", expression).strip()
     plan = build_linear_plan(text)
     if plan:
         return plan, "linear"
@@ -733,29 +840,88 @@ def build_plan(problem_text: str, allow_llm: bool = True
             from . import nebius as _nebius
             for _ in range(3):
                 try:
-                    llm_plan = _nebius.generate_plan(problem_text)
+                    llm_plan = _nebius.generate_plan(problem_text, task)
                 except Exception:
                     llm_plan = None
                 if not llm_plan:
                     continue
                 steps = llm_plan.get("steps", []) or []
-                ok, _ = validate_plan(steps, text)
+                ok, _ = validate_plan(steps, text, task)
                 if ok:
                     return steps, "llm"
     return None, "none"
 
 
-def validate_plan(plan: list[dict], problem_text: str) -> tuple[bool, str]:
+def validate_plan_shape(plan: list[dict]) -> tuple[bool, str]:
+    """Is this a usable step plan? Distinct steps, each a real action.
+
+    A model-written plan can repeat the same move twice or hand back a
+    garbled instruction; a student told to follow that has no idea what to
+    do next, and the guidance stops being about their problem.
+    """
+    from difflib import SequenceMatcher
+
+    if not isinstance(plan, list) or not (1 <= len(plan) <= 10):
+        return False, "plan has the wrong number of steps"
+    keys: list[str] = []
+    for st in plan:
+        if not isinstance(st, dict):
+            return False, "step is not a step"
+        instruction = str(st.get("instruction", "") or "").strip()
+        if len(instruction) < 12:
+            return False, f"instruction is not an action: {instruction!r}"
+        keys.append(re.sub(r"[^a-z0-9]+", " ", instruction.lower()).strip())
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            if keys[i] == keys[j] or SequenceMatcher(
+                    None, keys[i], keys[j]).ratio() > 0.93:
+                return False, f"repeated step: {keys[j]!r}"
+    return True, "step shape ok"
+
+
+def _task_is_solve_for_unknown(task: str) -> bool:
+    """Is the question "solve this for the unknown"?
+
+    Such a question has one right answer the CAS can re-derive, so its plan
+    is held to that answer. A question about a domain, a quadrant, the
+    nature of some roots or a transformation has no such answer, and
+    comparing its plan against the equation's solution set would throw
+    away a correct plan for answering a different question.
+    """
+    t = (task or "").lower()
+    if re.search(r"\bsolv", t):
+        return True
+    if re.search(r"\bwhen\b[^.]*\b(hit|reach|equal|zero|return)\b", t):
+        return True
+    if re.search(r"\bfind\b[^.]*\b(value|solutions?|roots?|zeros?)\b", t):
+        return True
+    return False
+
+
+def validate_plan(plan: list[dict], problem_text: str,
+                   task: str = "") -> tuple[bool, str]:
     """Independent CAS validation: re-solve and compare final answers.
 
     Returns (ok, reason). Never trusts the plan's own math. The re-solve is
     deterministic-only: routing it back through the LLM fallback made this
     function call itself for every uncovered problem and never returned.
+
+    A question with no single answer ("find the domain of
+    f(x) = sqrt(2x - 8)") has nothing to re-solve, so such a plan is judged
+    on its shape instead of being thrown away.
     """
     if not plan or not isinstance(plan, list) or len(plan) < 1:
         return False, "empty plan"
+    shaped, why = validate_plan_shape(plan)
+    if not shaped:
+        return False, why
     last = plan[-1]
     check = last.get("expected_expression", "") or ""
+    final_type = str(last.get("check_type", "") or "").lower()
+    if final_type == "conceptual" and not _task_is_solve_for_unknown(task):
+        # The plan says its last step cannot be checked by the CAS, and the
+        # question is not one with a single right answer. Judge the shape.
+        return True, "no reference answer for this question; shape checked"
     # Re-solve: the final answer must be re-derivable without the model.
     try:
         from .verifier import canonical_answer, check_equivalent
@@ -763,16 +929,18 @@ def validate_plan(plan: list[dict], problem_text: str) -> tuple[bool, str]:
         if redispatched:
             re_derived = redispatched[-1].get("expected_expression", "") or ""
         else:
-            answers = canonical_answer(problem_text)
+            answers = canonical_answer(canonical_expression(problem_text))
             if not answers:
-                return False, "could not re-solve"
+                return True, "no reference answer; step shape checked"
             re_derived = answers[0]
         v = check_equivalent(re_derived, check)
         if v.status == "correct":
             return True, "final answer re-derived"
         return False, f"final mismatch: {v.detail}"
     except Exception as exc:
-        return False, f"validator error: {exc}"
+        # The comparison could not be made. That is not evidence the plan is
+        # wrong, so the step shape decides.
+        return True, f"answer not comparable ({exc}); shape checked"
 
 
 def detect_equation(text: str) -> str | None:

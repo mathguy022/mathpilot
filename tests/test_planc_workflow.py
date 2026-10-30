@@ -32,7 +32,8 @@ LESSON = {
 }
 
 
-def test_lesson_draft_approve_publish_learn():
+def test_lesson_draft_approve_publish_learn(teacher_client):
+    client = teacher_client
     # Save draft.
     r = client.post("/api/lessons/save", json={
         "course_id": 1, "topic": "Limits", "lesson": LESSON, "settings": {}})
@@ -72,7 +73,8 @@ def test_lesson_draft_approve_publish_learn():
     assert again.status_code == 400
 
 
-def test_assignment_save_approve_publish():
+def test_assignment_save_approve_publish(teacher_client):
+    client = teacher_client
     items = [{
         "item_id": "q1", "prompt_latex": "Solve $x+1=2$.",
         "steps": [{"step_id": "s1", "description": "Subtract 1.",
@@ -104,7 +106,8 @@ def test_assignment_save_approve_publish():
     assert "solution_steps" not in page.text
 
 
-def test_publish_requires_approval():
+def test_publish_requires_approval(teacher_client):
+    client = teacher_client
     r = client.post("/api/lessons/save", json={
         "topic": "T", "lesson": dict(LESSON, title="Unapproved"),
         "settings": {}})
@@ -130,4 +133,22 @@ def test_publish_requires_approval():
 
 def test_bad_links_404():
     assert client.get("/learn/deadbeef").status_code == 404
+    assert client.get("/api/learn/deadbeef").status_code == 404
+
+
+def test_students_cannot_author_or_publish():
+    """The draft -> approve -> publish chain is instructor-only."""
+    for path in ["/api/lessons/save", "/api/assignments/save",
+                 "/api/publications", "/api/assign",
+                 "/api/generate-questions"]:
+        r = client.post(path, json={})
+        assert r.status_code == 403, f"POST {path} -> {r.status_code}"
+    for path in ["/api/lessons", "/api/assignments", "/instructor/dashboard",
+                 "/instructor/drafts", "/instructor"]:
+        r = client.get(path)
+        assert r.status_code == 403, f"GET {path} -> {r.status_code}"
+    # ...and a student's own workspace stays open.
+    assert client.get("/learn/deadbeef").status_code == 404
+    assert client.post("/api/assignments/progress", json={
+        "link_id": "deadbeef", "answers": {}}).status_code == 404
     assert client.get("/api/learn/deadbeef").status_code == 404

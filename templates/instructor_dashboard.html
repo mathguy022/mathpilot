@@ -190,8 +190,8 @@ function courseName(){ const el=document.getElementById('les-course');
 // previous canvas state.
 const COURSE_IDS={ {% for c in courses %}{{ c.title|tojson }}:{{ c.id }}{% if not loop.last %},{% endif %} {% endfor %} };
 function courseId(){ const id=COURSE_IDS[courseName()]; return id!=null?id:null; }
-// Per-course topic suggestions (single source: mirrors app/courses.py).
-const COURSE_TOPICS={"Pre-Algebra":["Order of Operations","Fractions & Decimals","Basic Linear Equations"],"Algebra 1":["Linear Equations","Systems of Equations","Factoring Polynomials","Quadratics"],"Algebra 2":["Logarithms & Exponentials","Complex Numbers","Conic Sections","Rational Functions"],"Trigonometry":["Unit Circle Basics","Trig Identities","Law of Sines/Cosines","Inverse Trig"],"Pre-Calculus":["Function Analysis","Vectors & Matrices","Polar Coordinates","Intro to Limits"],"Calculus 1":["Limits & Continuity","Derivatives","Applications of Derivatives","Integrals"],"Calculus I":["Limits & Continuity","Derivatives","Applications of Derivatives","Integrals"]};
+// Per-course topic suggestions (single source: app/courses.py).
+const COURSE_TOPICS={{ course_topics|tojson }};
 function updateTopicHint(){ const t=document.getElementById('topic-hint');
  const sug=COURSE_TOPICS[courseName()];
  t.textContent=sug?('Try: '+sug.slice(0,3).join(' · ')):'';
@@ -395,7 +395,7 @@ async function publishSel(which){
  if(which==='assignment'||which==='both') body.assignment_id=ASSIGN_ID;
  try{ const r=await fetch('/api/publications',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j=await r.json(); if(!r.ok){ toast('Error: '+(j.detail||'failed')); box.innerHTML=''; return; }
-  window.location.href='/success/'+j.link_id;
+  window.location.href=j.student_url||('/learn/'+j.link_id);
  }catch(e){ toast('Request failed.'); box.innerHTML=''; } }
 function guardAssign(which){
  if(which==='lesson'){

@@ -115,8 +115,10 @@ def add_viewer_context(templates: Jinja2Templates):
     """Expose the current viewer and the roster to every template.
 
     Jinja cannot open a database session, so the lookups happen here and the
-    template only renders the result.
+    template only renders the result. `demo` is exposed here rather than
+    route by route because the sidebar attribution needs it on every page.
     """
+    from . import config
     from .db import SessionLocal
 
     def _context(request: Request) -> dict:
@@ -128,6 +130,7 @@ def add_viewer_context(templates: Jinja2Templates):
                 "viewer": who,
                 "viewer_initials": initials(who.name) if who else "—",
                 "roster": roster,
+                "demo": not config.ai_configured(),
             }
         finally:
             db.close()

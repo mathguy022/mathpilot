@@ -1,11 +1,17 @@
-"""Tests for the saved-drafts manager page and draft delete endpoints."""
+"""Tests for the saved-drafts manager page and draft delete endpoints.
+
+Every test here drives the instructor manager surface, so the module client
+carries the teacher's signed cookie throughout.
+"""
 import os
 
 os.environ["DEMO_MODE"] = "true"
 
+import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
+from tests._identity import sign_in_as, sign_out  # noqa: E402
 
 client = TestClient(app)
 
@@ -15,6 +21,13 @@ LESSON = {"title": "Drafts Test Lesson", "course": "Calculus I",
 ASSIGN_ITEM = {"item_id": "q1",
                "prompt_latex": "Solve $x+1=2$.",
                "steps": []}
+
+
+@pytest.fixture(autouse=True)
+def _as_instructor():
+    sign_in_as(client, "instructor")
+    yield
+    sign_out(client)
 
 
 def test_drafts_page_renders():

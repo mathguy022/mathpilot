@@ -1,18 +1,18 @@
 """Instructor-side AI question generation (Phase 2).
 
 Generate-then-verify: Qwen proposes candidates from instructor notes,
-the deterministic verifier gate (schemas.verify_question) admits only
-parseable, self-consistent ones. Generated questions are NEVER shown
-to students directly — they land as drafts requiring instructor
-approval. Raw notes are treated as untrusted: length-bounded and never
-followed as instructions.
+the deterministic verifier gate (schemas.verify_question_canonical)
+admits only parseable, self-consistent ones. Generated questions are
+NEVER shown to students directly — they land as drafts requiring
+instructor approval. Raw notes are treated as untrusted: length-bounded
+and never followed as instructions.
 """
 from __future__ import annotations
 
 import json
 
 from . import config, nebius
-from .schemas import Question, QuestionStep, verify_question
+from .schemas import Question, QuestionStep
 
 MAX_NOTES_CHARS = 4000
 MAX_CANDIDATES = 10

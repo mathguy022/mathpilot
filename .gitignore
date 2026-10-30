@@ -154,6 +154,10 @@ activemq-data/
 .envrc
 .mathpilot.db
 mathpilot.db
+# Local backups of the demo database: synthetic, but they are student-shaped
+# data and they are never what a commit is for.
+mathpilot.db.bak-*
+*.db-journal
 
 # Instructor-uploaded sources and local virtualenv (never commit)
 uploads/

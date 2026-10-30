@@ -235,8 +235,16 @@ def ensure_schema():
                 total_misses INTEGER DEFAULT 0,
                 hints_used INTEGER DEFAULT 0,
                 graded_mode BOOLEAN DEFAULT 0,
+                task TEXT DEFAULT '',
                 created_at DATETIME,
                 completed_at DATETIME)""")
+        # The task the student was set, so the tutor knows what is asked.
+        sess_cols = {r[1] for r in conn.exec_driver_sql(
+            f"PRAGMA table_info({TutorSession.__tablename__})")}
+        if "task" not in sess_cols:
+            conn.exec_driver_sql(
+                f"ALTER TABLE {TutorSession.__tablename__} "
+                "ADD COLUMN task TEXT DEFAULT ''")
         conn.exec_driver_sql(
             f"""CREATE TABLE IF NOT EXISTS {TutorEvent.__tablename__} (
                 id INTEGER PRIMARY KEY,
@@ -274,6 +282,38 @@ def ensure_schema():
                 hints INTEGER DEFAULT 0,
                 draft TEXT DEFAULT '',
                 updated_at DATETIME)""")
+        # Tutor thread transcript + hint ladder, the rate-limit window and the
+        # pending "start a new problem?" offer. These were process-memory dicts
+        # before; the tables are what make them survive a restart.
+        conn.exec_driver_sql(
+            f"""CREATE TABLE IF NOT EXISTS {TutorThread.__tablename__} (
+                id INTEGER PRIMARY KEY,
+                key VARCHAR(200) NOT NULL UNIQUE,
+                messages_json TEXT DEFAULT '[]',
+                hints INTEGER DEFAULT 0,
+                misses INTEGER DEFAULT 0,
+                unreadable INTEGER DEFAULT 0,
+                moves INTEGER DEFAULT 0,
+                created_at DATETIME,
+                updated_at DATETIME)""")
+        th_cols = {r[1] for r in conn.exec_driver_sql(
+            f"PRAGMA table_info({TutorThread.__tablename__})")}
+        if "moves" not in th_cols:
+            conn.exec_driver_sql(
+                f"ALTER TABLE {TutorThread.__tablename__} "
+                "ADD COLUMN moves INTEGER DEFAULT 0")
+        conn.exec_driver_sql(
+            f"""CREATE TABLE IF NOT EXISTS {TutorPending.__tablename__} (
+                id INTEGER PRIMARY KEY,
+                student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                course_id VARCHAR(200) NOT NULL DEFAULT '',
+                problem_text TEXT DEFAULT '',
+                ts FLOAT NOT NULL DEFAULT 0)""")
+        conn.exec_driver_sql(
+            f"""CREATE TABLE IF NOT EXISTS {TutorRateHit.__tablename__} (
+                id INTEGER PRIMARY KEY,
+                student_id INTEGER NOT NULL REFERENCES {User.__tablename__}(id),
+                ts FLOAT NOT NULL DEFAULT 0)""")
 
 
 class ReviewRequest(Base):
@@ -319,6 +359,10 @@ class TutorSession(Base):
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     course_id = Column(String(200), default="")
     problem_text = Column(Text, default="")
+    # What the student is actually asked to do with problem_text ("find the
+    # domain", "does the limit exist"). Without it the tutor only sees the
+    # expression and answers a different question than the one that was set.
+    task = Column(Text, default="")
     solution_plan_json = Column(Text, default="[]")
     status = Column(String(20), default="active")  # active|completed|abandoned
     current_step_index = Column(Integer, default=0)
@@ -363,6 +407,60 @@ class PracticeProgress(Base):
     hints = Column(Integer, default=0)
     draft = Column(Text, default="")
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class TutorThread(Base):
+    """Server-owned tutor conversation state, one row per thread.
+
+    Replaces the dicts this app kept in process memory, so a restart or a
+    second worker neither forgets what the student already tried nor hands
+    back a fresh hint budget. ``key`` names the thread (item, activity step,
+    or the general tutor tab) and always carries the student id, so a row is
+    never shared between students.
+    """
+
+    __tablename__ = "tutor_threads"
+    id = Column(Integer, primary_key=True)
+    key = Column(String(200), unique=True, nullable=False)
+    messages_json = Column(Text, default="[]")
+    hints = Column(Integer, default=0)
+    misses = Column(Integer, default=0)
+    unreadable = Column(Integer, default=0)
+    # How many moves of the verified plan have already been handed out for
+    # this thread. Without it the plan walk restarts at move 1 every turn.
+    moves = Column(Integer, default=0)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class TutorPending(Base):
+    """A "start this new problem?" offer the student has not answered yet.
+
+    One row per (student, course). ``ts`` is the wall-clock stamp the TTL is
+    read against, so an old offer is ignored rather than confirmed by
+    accident; if it is ever lost, the router simply re-runs.
+    """
+
+    __tablename__ = "tutor_pending"
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    course_id = Column(String(200), nullable=False, default="")
+    problem_text = Column(Text, default="")
+    ts = Column(Float, nullable=False, default=0.0)
+
+
+class TutorRateHit(Base):
+    """One tutor message, for the sliding-window rate limit.
+
+    Rows outside the window are pruned as they are read; the count inside it
+    is what the limit checks, so the limit follows the student rather than
+    the lifetime of one worker process.
+    """
+
+    __tablename__ = "tutor_rate_hits"
+    id = Column(Integer, primary_key=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    ts = Column(Float, nullable=False, default=0.0)
 
 
 def get_db():

@@ -4,7 +4,7 @@
 {% block content %}
 <!-- Breadcrumb & Page Title -->
 <div class="breadcrumb">
-  <a href="/courses">Calculus I</a> &nbsp;/&nbsp; <span>Chain rule</span>
+  <a href="/courses">My Courses</a> &nbsp;/&nbsp; <span>{{ activity.title }}</span>
 </div>
 
 <h1 class="page-title">{{ activity.title }}</h1>
@@ -17,7 +17,7 @@
     <!-- QUESTION CARD -->
     <div class="question-card">
       <div class="question-top-row">
-        <span class="question-number">QUESTION {{ question_index }} of {{ total_questions }}</span>
+        <span class="question-number">STEP {{ active_step + 1 }} of {{ steps|length }}</span>
         <span class="approval-badge">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
           Approved by Dr. Lee
@@ -33,7 +33,7 @@
       <!-- Stepper -->
       <div class="stepper-container">
         <div class="stepper-line">
-          <div class="stepper-line-fill" id="stepperFill" style="width: 50%;"></div>
+          <div class="stepper-line-fill" id="stepperFill" style="width: {{ (100 * active_step / (steps|length - 1))|round|int if steps|length > 1 else 0 }}%;"></div>
         </div>
         <div class="stepper-track">
           {% for s in steps %}
@@ -102,8 +102,8 @@
       <!-- ACTIVE WORKING STEP INPUT EDITOR -->
       <div class="step-item active-step" id="activeEditorItem">
         <div class="input-row-group">
-          <div class="step-num-bubble" id="activeStepBubble">3</div>
-          <div class="math-prefix" id="activeStepPrefix">f'(x) =</div>
+          <div class="step-num-bubble" id="activeStepBubble">{{ active_step + 1 }}</div>
+          <div class="math-prefix" id="activeStepPrefix">Step {{ active_step + 1 }}:</div>
           <math-field id="mf" placeholder="Enter your expression"></math-field>
         </div>
 

@@ -221,6 +221,94 @@ def _strip_solution_steps(body: str) -> str:
     return "\n".join(kept)
 
 
+def _clean_task_text(text: str) -> str:
+    """Markdown emphasis off, whitespace collapsed, punctuation trimmed."""
+    t = re.sub(r"[*`]+", "", text or "")
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"\s+([,.;:])", r"\1", t)
+    return t.strip(" .;,")
+
+
+_MATH_SPAN_RE = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$|\\\((.+?)\\\)", re.S)
+
+
+def _math_spans(text: str) -> list[str]:
+    """The math expressions inside a piece of markdown, in order."""
+    out = []
+    for m in _MATH_SPAN_RE.finditer(text or ""):
+        span = next((g for g in m.groups() if g), "")
+        if span.strip():
+            out.append(span.strip())
+    return out
+
+
+def _numbered_items(body: str) -> list[str]:
+    """The numbered questions in a practice body, in order."""
+    text = body or ""
+    if not text:
+        return []
+    spans: list[tuple[int, int]] = []
+    want = 1
+    for m in re.finditer(r"(?:(?<=\s)|^)(\d+)\.\s+", text):
+        if int(m.group(1)) != want:
+            continue
+        spans.append((m.start(), m.end()))
+        want += 1
+    if not spans:
+        return []
+    items = []
+    for i, (_start, end) in enumerate(spans):
+        stop = spans[i + 1][0] if i + 1 < len(spans) else len(text)
+        items.append(text[end:stop].strip())
+    return items
+
+
+def _same_math(a: str, b: str) -> bool:
+    """Compare two math snippets ignoring spacing and braces."""
+    def norm(s: str) -> str:
+        return re.sub(r"[\s{}]", "", s or "")
+    return bool(norm(a)) and norm(a) == norm(b)
+
+
+def _practice_task_texts(body: str, expressions: list[str]) -> list[str]:
+    """The question each practice expression belongs to, in order.
+
+    A practice section states its questions as a numbered list in the body
+    and holds the bare expressions separately in math_latex. The expression
+    says WHAT to work on but not what is ASKED (find the domain? describe the
+    transformations? does the limit exist?), and a tutor that only sees the
+    expression answers a different question than the student was set.
+
+    When the counts line up the two lists pair up by position. When they do
+    not, each expression is matched to the question whose own math it is,
+    and an expression no question asks about is left without a task rather
+    than given the wrong one.
+    """
+    count = len(expressions or [])
+    items = _numbered_items(body)
+    if not items or count <= 0:
+        return [""] * count
+    tasks = [_clean_task_text(t) for t in items]
+    if len(items) == count:
+        return tasks
+    # Counts differ: match on the expression each question is about.
+    owner: dict[str, int] = {}
+    for i, item in enumerate(items):
+        spans = _math_spans(item)
+        if spans:
+            owner.setdefault(spans[-1], i)
+    out: list[str] = []
+    for expr in expressions:
+        idx = owner.get(expr)
+        if idx is None:
+            idx = next((i for i, it in enumerate(items)
+                        if any(_same_math(s, expr) for s in _math_spans(it))),
+                        None)
+        out.append(tasks[idx] if idx is not None else "")
+    return out
+
+
+
 def derive_student_lesson(lesson: LessonContent,
                           settings: LessonSettings) -> dict:
     """Deterministic transform: approved lesson -> student-facing content.
@@ -237,10 +325,14 @@ def derive_student_lesson(lesson: LessonContent,
             continue  # instructor-only, never shipped to students
         if s.kind == "practice":
             # Practice bodies often embed answers — convert to guided items.
+            # The body's numbered questions become each item's task, so the
+            # student and the tutor both know what is being asked.
+            tasks = _practice_task_texts(s.body_markdown, list(s.math_latex))
             for i, m in enumerate(s.math_latex):
                 guided.append({
                     "item_id": f"practice-{len(guided) + 1}",
                     "prompt_latex": m,
+                    "task": tasks[i] if i < len(tasks) else "",
                     "context": s.heading,
                     "hints_enabled": settings.hints_enabled,
                 })

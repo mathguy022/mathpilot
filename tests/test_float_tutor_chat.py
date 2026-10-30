@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch
 
 from app.db import SessionLocal, TutorEvent, TutorSession
-from app.main import app, FLOAT_TUTOR_HITS, FLOAT_TUTOR_PENDING
+from app.main import app
+from tests._tutor_state import wipe_tutor_state
 
 client = TestClient(app)
 
@@ -27,8 +28,7 @@ def _wipe():
         db.commit()
     finally:
         db.close()
-    FLOAT_TUTOR_HITS.clear()
-    FLOAT_TUTOR_PENDING.clear()
+    wipe_tutor_state()
 
 
 def _msg(text):

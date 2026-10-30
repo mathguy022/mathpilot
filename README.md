@@ -162,7 +162,7 @@ Requirements:
 
 ## Implementation status (working code)
 
-Student Workspace MVP is implemented and tested (97 tests passing):
+Student Workspace MVP is implemented and tested (263 tests passing, 6 skipped, verified 2026-10-29):
 
 - **Student dashboard** (`/`): real assigned-lesson/assignment cards with counts and statuses.
 - **My Lessons** (`/lessons` → `/learn/{link}`): instructor-approved content, objectives, worked examples, "Practice This Topic" button.
