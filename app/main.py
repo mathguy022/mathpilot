@@ -34,7 +34,13 @@ auth.add_viewer_context(templates)
 
 # Instructor-uploaded sources (PDF/Word). Stored outside /static so they are
 # never served publicly; access goes only through the gated route below.
-UPLOAD_DIR = BASE / "uploads"
+if os.getenv("VERCEL"):
+    UPLOAD_DIR = Path("/tmp/uploads")
+    if config.DATABASE_URL == "sqlite:////tmp/mathpilot.db" and not Path("/tmp/mathpilot.db").exists():
+        if (BASE / "mathpilot.db").exists():
+            shutil.copy2(BASE / "mathpilot.db", "/tmp/mathpilot.db")
+else:
+    UPLOAD_DIR = BASE / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 # extension -> (media type, inline-previewable?)
