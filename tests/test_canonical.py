@@ -105,6 +105,40 @@ def test_integral_wrong():
     assert verify_canonical(q).status == "incorrect"
 
 
+def test_integral_with_symbol_verifies():
+    q = _q(r"Evaluate: $\int (3x^2 - 4x + 5) \, dx$", "x^3 - 2x^2 + 5x + C",
+           tags=["integral"])
+    assert verify_canonical(q).status == "correct"
+
+
+def test_definite_integral_verifies():
+    q = _q(r"Evaluate: $\int_{0}^{2} (6x^2 + 1) \, dx$", "18",
+           tags=["integral"])
+    assert verify_canonical(q).status == "correct"
+    wrong = _q(r"Evaluate: $\int_{0}^{2} (6x^2 + 1) \, dx$", "17",
+               tags=["integral"])
+    assert verify_canonical(wrong).status == "incorrect"
+
+
+def test_log_base_expression_verifies():
+    q = _q(r"Express $\log_5(12)$ using natural logarithms.",
+           r"\frac{\ln(12)}{\ln(5)}", tags=["logarithm"])
+    assert verify_canonical(q).status == "correct"
+
+
+def test_real_root_accepted_when_solver_finds_complex_branch():
+    # solve(e^{2x} = 7) has a real and a complex root; the real answer stands.
+    q = _q(r"Solve the exponential equation $e^{2x} = 7$ for $x$.",
+           r"x=\frac{\ln(7)}{2}", tags=["exponential"])
+    assert verify_canonical(q).status == "correct"
+
+
+def test_log_equation_routed_to_equation_solver():
+    q = _q(r"Solve $\log_2(x) + \log_2(x-2) = 3$ for $x$.", "x=4",
+           tags=["logarithm"])
+    assert verify_canonical(q).status == "correct"
+
+
 def test_limit_supported_grammar():
     q = _q(r"\lim_{x \to 2} x^2+1", "5", tags=["limit"])
     assert verify_canonical(q).status == "correct"

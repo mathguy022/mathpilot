@@ -1,6 +1,7 @@
 """MathPilot FastAPI app: student workspace, instructor dashboard, JSON API."""
 from __future__ import annotations
 import json
+import logging
 import os
 import shutil
 import time
@@ -25,6 +26,7 @@ from .db import (
 from .seed import seed
 from .tutor import orchestrate
 from .verifier import MAX_LEN
+log = logging.getLogger("mathpilot")
 
 BASE = Path(__file__).resolve().parent.parent
 app = FastAPI(title="MathPilot")
@@ -3619,11 +3621,20 @@ def api_assignments_generate(payload: dict, db: Session = Depends(get_db),
     try:
         result = generate_mod.generate_questions(
             notes=f"Course: {course}\n{notes}" if course else notes,
-            topic=topic, num_questions=n, difficulty=difficulty)
+            topic=topic, num_questions=n, difficulty=difficulty,
+            allow_broadening=bool(lesson_id))
+    except generate_mod.ProviderUnavailable as exc:
+        log.warning("assignment generation: provider unavailable: %s", exc)
+        raise HTTPException(
+            502, "The question generator is temporarily unavailable, so no "
+                 "assignment was changed. Please try again in a moment.")
     except RuntimeError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
-        raise HTTPException(502, f"Assignment generation failed: {exc}")
+        log.warning("assignment generation failed: %s", exc)
+        raise HTTPException(
+            502, "The question generator is temporarily unavailable, so no "
+                 "assignment was changed. Please try again in a moment.")
     items, solutions = [], {}
     for i, qd in enumerate(result.get("verified", [])):
         q = Question.model_validate(qd)
@@ -3645,6 +3656,9 @@ def api_assignments_generate(payload: dict, db: Session = Depends(get_db),
         }
     return {"items": items, "solutions": solutions,
             "verified": len(items),
+            "requested": result.get("requested", n),
+            "shortfall": result.get("shortfall", 0),
+            "broadened": bool(result.get("broadened", False)),
             "discarded": result.get("discarded", 0),
             "discard_reasons": result.get("discard_reasons", []),
             "truncated_notes": result.get("truncated_notes", False)}

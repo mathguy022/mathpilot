@@ -228,3 +228,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local-only copies and assistant tool settings (never shipped)
+MathPilot _last/
+.claude/

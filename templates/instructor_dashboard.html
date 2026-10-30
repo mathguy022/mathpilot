@@ -290,13 +290,26 @@ async function genAssignment(){ const out=document.getElementById('asg-out');
    notes:document.getElementById('les-notes').value,num_questions:n,
    difficulty_balance:diffLevel(),from_lesson_id:document.getElementById('asg-from-lesson').checked?LESSON_ID:null})});
   const j=await r.json();
-  if(!r.ok){ out.innerHTML='<p class="muted">No assignment draft.</p>'; toast('Error: '+(j.detail||'failed')); btn.disabled=false; return; }
+  if(!r.ok){ const msg=(j&&j.detail)?String(j.detail):'The request did not complete. Nothing was changed — please try again.';
+   out.innerHTML='<p class="pub-note">'+esc(msg)+'</p>';
+   toast('No assignment created — nothing was changed.'); btn.disabled=false; return; }
+  if(!(j.items||[]).length){
+   // Every candidate failed the SymPy gate. Do not replace the canvas with an
+   // empty draft: say plainly that nothing was created and why, and leave the
+   // button usable so the instructor can retry or change the topic.
+   const reasons=(j.discard_reasons||[]).slice(0,3);
+   out.innerHTML='<p class="pub-note">No questions passed verification, so no assignment was created — nothing was lost, try again or adjust the topic.</p>'
+    +(reasons.length?'<details><summary><small class="muted">Why the candidates were rejected</small></summary><pre>'+esc(reasons.join('\n'))+'</pre></details>':'');
+   toast('No questions passed verification — no assignment created.');
+   btn.disabled=false; return; }
   ASSIGN={items:j.items,settings:{title:'',due_date:'',attempts_allowed:1,grading_policy:'Completion',hints_enabled:true,solution_release:'after-due'}};
   ASSIGN_ID=null; ASSIGN_STATUS='unsaved';
   renderAssign(); showTab('assignment');
-  out.innerHTML='<p class="muted">'+j.items.length+' items, '+j.verified+' verified, '+j.discarded+' discarded.</p>';
+  out.innerHTML='<p class="muted">'+j.items.length+' of '+(j.requested||n)+' requested questions verified ('+j.discarded+' candidates rejected by SymPy).</p>';
+  if(j.broadened) out.innerHTML+='<p class="pub-note">Some questions follow the course topic rather than the lesson objectives — the lesson objectives were descriptive and could not be checked by SymPy.</p>';
+  if(j.items.length<(j.requested||n)) out.innerHTML+='<p class="pub-note">Only '+j.items.length+' question'+(j.items.length===1?'':'s')+' passed verification. Click Create Assignment again for a fresh batch, or add lecture notes / narrow the topic to steer the model.</p>';
   if((j.discard_reasons||[]).length) out.innerHTML+='<details><summary><small class="muted">Discard reasons</small></summary><pre>'+esc(j.discard_reasons.join('\n'))+'</pre></details>';
- }catch(e){ toast('Request failed.'); }
+ }catch(e){ out.innerHTML='<p class="pub-note">The request did not complete (network or server error). Nothing was changed — please try again.</p>'; toast('Request failed — nothing was changed.'); }
  btn.disabled=false; }
 function renderAssign(){ const prev=document.getElementById('preview-asg');
  if(!ASSIGN){ prev.innerHTML='<div class="card empty-state"><p class="muted">No assignment loaded.</p></div>'; return; }
