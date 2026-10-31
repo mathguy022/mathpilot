@@ -63,20 +63,54 @@ def resolve(token: str | None) -> int | None:
         return None
 
 
-def viewer(request: Request, db) -> User | None:
-    """The signed-in roster user, or None. Role comes from the database."""
-    uid = resolve(request.cookies.get(COOKIE))
-    if uid is None:
+def is_public_demo() -> bool:
+    """True when public demo access is active (default for web/deployment)."""
+    if os.getenv("TESTING", "").lower() in ("1", "true", "yes"):
+        return os.getenv("MATHPILOT_PUBLIC_DEMO", "").lower() in ("1", "true", "yes")
+    return os.getenv("MATHPILOT_PUBLIC_DEMO", "true").lower() in ("1", "true", "yes")
+
+
+def default_demo_user(db: Session) -> User | None:
+    """The default public demo user (Dr. Sarah Wilson, or the first instructor)."""
+    try:
+        return (
+            db.query(User).filter(User.name == "Dr. Sarah Wilson").first()
+            or db.query(User).filter(User.role == "instructor").order_by(User.id).first()
+            or db.query(User).first()
+        )
+    except Exception:
         return None
-    return db.query(User).filter(User.id == uid).first()
+
+
+def viewer(request: Request, db: Session) -> User | None:
+    """The signed-in roster user, or the default public demo instructor.
+
+    Anyone visiting the deployed site without an account or cookie is given
+    public demo access as Dr. Sarah Wilson so they can explore all features
+    (AI tutor, lesson builder, assignment generation, analytics) without
+    manual sign-in. Users can still switch accounts or explicitly sign out.
+    """
+    cookie_val = request.cookies.get(COOKIE)
+    if cookie_val is not None:
+        uid = resolve(cookie_val)
+        if uid == 0:
+            # Explicit sign-out
+            return None
+        if uid is not None:
+            return db.query(User).filter(User.id == uid).first()
+        # Invalid / tampered cookie provided: reject rather than defaulting
+        return None
+    # Public Demo Access: No cookie set -> default to Dr. Sarah Wilson
+    if is_public_demo():
+        return default_demo_user(db)
+    return None
 
 
 def viewer_or_demo_student(request: Request, db) -> User:
     """Identity for a student-facing page.
 
-    With no cookie the demo roster's first student is used, which is what the
-    app already assumed before any identity existed. An instructor viewing a
-    student page sees that instructor's own (empty) work, not someone else's.
+    With no cookie the demo roster's default public demo user is used.
+    An instructor viewing a student page sees that instructor's own work.
     """
     who = viewer(request, db)
     if who is not None:
@@ -104,6 +138,15 @@ def set_viewer(response, user: User):
         samesite="lax", path="/",
         # Off by default so the demo works on http://localhost; turn on with
         # MATHPILOT_COOKIE_SECURE once this is served over https.
+        secure=os.getenv("MATHPILOT_COOKIE_SECURE", "").lower() in ("1", "true", "yes"))
+    return response
+
+
+def set_signed_out(response):
+    """Set cookie indicating explicit signed-out state."""
+    response.set_cookie(
+        key=COOKIE, value=issue(0), max_age=MAX_AGE, httponly=True,
+        samesite="lax", path="/",
         secure=os.getenv("MATHPILOT_COOKIE_SECURE", "").lower() in ("1", "true", "yes"))
     return response
 

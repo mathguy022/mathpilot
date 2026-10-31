@@ -18,6 +18,7 @@ import pytest
 _TMP = tempfile.mkdtemp(prefix="mathpilot-tests-")
 os.environ["DATABASE_URL"] = "sqlite:///" + (
     pathlib.Path(_TMP) / "test.db").as_posix()
+os.environ["TESTING"] = "1"
 
 
 def pytest_sessionfinish(session, exitstatus):

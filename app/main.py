@@ -1484,7 +1484,11 @@ def _float_log(db: Session, session_id: int, step_index: int,
 def _student_first_name(db: Session, student_id: int) -> str:
     row = db.query(User).filter(User.id == student_id).first()
     parts = str(getattr(row, "name", "") or "").split() if row else []
-    return parts[0] if parts else ""
+    if not parts:
+        return ""
+    if parts[0] in ("Dr.", "Prof.", "Professor") and len(parts) > 1:
+        return f"{parts[0]} {parts[1]}"
+    return parts[0]
 
 
 def _float_current_prompt(session: TutorSession | None) -> str:
@@ -3223,7 +3227,7 @@ def view_as(user_id: int = Form(...), back: str = Form("/"),
     cannot be turned into an off-site redirect."""
     dest = back if back.startswith("/") and not back.startswith("//") else "/"
     if user_id == 0:
-        return auth.clear_viewer(RedirectResponse(dest, status_code=303))
+        return auth.set_signed_out(RedirectResponse(dest, status_code=303))
     target = db.query(User).filter(User.id == user_id).first()
     if target is None:
         raise HTTPException(404, "No such roster user")
