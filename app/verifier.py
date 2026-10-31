@@ -533,6 +533,10 @@ MODE_TAGS: dict[str, str] = {
     "factor": "simplify", "factoring": "simplify",
     "expand": "simplify",
     # functions & transcendental (verified via equivalence fallback)
+    "linear function": "equiv", "linear functions": "equiv",
+    "slope": "equiv", "intercepts": "equiv",
+    "function": "equiv", "functions": "equiv",
+    "function evaluation": "equiv",
     "power function": "simplify", "power functions": "simplify",
     "exponential": "simplify", "logarithm": "simplify",
     "logarithms": "simplify",
@@ -670,10 +674,11 @@ def _eq_objects(prompt: str) -> tuple[list, list]:
             # Bare expression: treat as expr = 0.
             expr = _parse_single(part)
             syms.extend(list(expr.free_symbols))
-            # A lone variable mention (e.g. 'for $\theta$ in [0,2\pi]') names a
-            # symbol but is not an equation; do not fabricate 'theta = 0', which
-            # would make the solver see an inconsistent system.
-            if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", normalize_math(part)):
+            # A lone variable or function mention (e.g. 'for $\theta$ in [0,2\pi]', '$f(x)$')
+            # names a symbol/function but is not an equation; do not fabricate
+            # 'f(x) = 0' or 'theta = 0', which would make the solver see an inconsistent system.
+            norm_part = normalize_math(part).strip()
+            if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*(\([a-zA-Z0-9_,\s]*\))?", norm_part):
                 continue
         else:
             lhs_raw, rhs_raw = part.split("=", 1)
@@ -713,14 +718,16 @@ def _parse_answer_set(answer: str) -> tuple[list, str | None]:
                 return [], f"mixed answer format: {part!r}"
             var, val = part.split("=", 1)
             var = normalize_math(var).strip()
-            if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", var):
+            var_clean = re.sub(r"\([a-zA-Z0-9_,\s]+\)$", "", var).strip()
+            var_clean = re.sub(r"['’]+", "", var_clean)
+            if not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_]*", var_clean):
                 return [], f"bad variable name: {var!r}"
             if "=" in val:
                 # A second '=' means the value is itself an equation. Parsing
                 # it would keep only its right-hand side and lose the other
                 # answers, so refuse instead of grading a partial answer.
                 return [], f"mixed answer format: {part!r}"
-            assigns.setdefault(var, []).append(_parse_single(val))
+            assigns.setdefault(var_clean, []).append(_parse_single(val))
         # Single variable with several values -> value list.
         if len(assigns) == 1:
             return list(next(iter(assigns.values()))), None
@@ -796,6 +803,22 @@ def _verify_equation(question, is_system: bool) -> Verdict:
         return Verdict("unverifiable", f"Could not parse problem: {exc}")
     if not syms:
         return Verdict("unverifiable", "No variables found in problem.")
+    if len(syms) > len(eqs):
+        return Verdict("unverifiable", "Equation has multiple free variables.")
+    answer_text = _normalize_answer_separators(question.final_answer_latex)
+    if "=" in answer_text:
+        assigned_vars = set()
+        for part in _split_top_level(answer_text):
+            if "=" in part:
+                v = normalize_math(part.split("=", 1)[0]).strip()
+                v = re.sub(r"\([a-zA-Z0-9_,\s]+\)$", "", v).strip()
+                v = re.sub(r"['’]+", "", v)
+                if v:
+                    assigned_vars.add(v)
+        sym_names = {str(s) for s in syms}
+        if assigned_vars and not assigned_vars.issubset(sym_names):
+            return Verdict("unverifiable",
+                           "Answer variables do not match equation variables.")
     try:
         if is_system or len(eqs) > 1:
             try:
@@ -1118,6 +1141,8 @@ def _verify_simplify(question) -> Verdict:
     except Exception as exc:
         return Verdict("unverifiable", f"Could not parse input safely: {exc}")
     try:
+        if isinstance(s, tuple) or isinstance(e, tuple):
+            return Verdict("unverifiable", "Cannot simplify tuple expressions.")
         with sp.evaluate(True):
             diff = sp.simplify(s - e)
         if diff == 0:
@@ -1127,6 +1152,8 @@ def _verify_simplify(question) -> Verdict:
                            "Numerically equivalent at probe points.")
         if not question.final_answer_latex.strip():
             return Verdict("incomplete", "Empty response — please enter a step.")
+        if s.free_symbols != e.free_symbols:
+            return Verdict("unverifiable", "Expressions contain different symbols.")
         return Verdict("incorrect", "Not equivalent to the expected form.")
     except Exception as exc:
         return Verdict("unverifiable", f"Verification failed safely: {exc}")
@@ -1170,7 +1197,9 @@ def verify_canonical(question) -> Verdict:
     except Exception:
         pass
     try:
-        return _verify_simplify(question)
+        sv = _verify_simplify(question)
+        if sv.status in ("correct", "incorrect"):
+            return sv
     except Exception:
         pass
     # Default: algebraic equivalence of final answer vs last step.

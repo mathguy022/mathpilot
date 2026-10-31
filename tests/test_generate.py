@@ -277,3 +277,69 @@ def test_generate_verifies_candidates(monkeypatch):
     # re-surface it as a duplicate, so assert at least one discard is logged.
     assert result["discarded"] >= 1
     assert result["discard_reasons"]
+
+
+def test_generate_linear_functions_batch_verified(monkeypatch):
+    """Diverse linear function questions all pass verification."""
+    import app.generate as gen
+
+    batch = [
+        {
+            "prompt": "Find the slope of the line passing through $(1, 2)$ and $(3, 8)$.",
+            "answer": "m = 3",
+            "objective": "slope",
+            "difficulty": 2,
+            "steps": [
+                {"description": "Use the slope formula.", "expected": "m = \\frac{8 - 2}{3 - 1}"},
+                {"description": "Simplify the slope.", "expected": "m = 3"},
+            ],
+        },
+        {
+            "prompt": "Write the equation of the line with slope $m = 2$ and y-intercept $(0, -1)$.",
+            "answer": "y = 2x - 1",
+            "objective": "linear function",
+            "difficulty": 2,
+            "steps": [
+                {"description": "Use slope-intercept form.", "expected": "y = 2x - 1"},
+            ],
+        },
+        {
+            "prompt": "Evaluate $f(4)$ for the linear function $f(x) = 3x - 5$.",
+            "answer": "7",
+            "objective": "function evaluation",
+            "difficulty": 2,
+            "steps": [
+                {"description": "Substitute 4 into f(x).", "expected": "3(4) - 5"},
+                {"description": "Calculate the result.", "expected": "7"},
+            ],
+        },
+        {
+            "prompt": "Find the x-intercept of the line $2x + 4y = 8$.",
+            "answer": "x = 4",
+            "objective": "linear equation",
+            "difficulty": 2,
+            "steps": [
+                {"description": "Set y to 0.", "expected": "2x + 4(0) = 8"},
+                {"description": "Solve for x.", "expected": "x = 4"},
+            ],
+        },
+        {
+            "prompt": "Find the point of intersection of $y = 2x - 1$ and $y = -x + 5$.",
+            "answer": "x = 2, y = 3",
+            "objective": "linear system",
+            "difficulty": 3,
+            "steps": [
+                {"description": "Set equations equal.", "expected": "2x - 1 = -x + 5"},
+                {"description": "Solve for x.", "expected": "x = 2"},
+                {"description": "Solve for y.", "expected": "y = 3"},
+            ],
+        },
+    ]
+    import json
+    monkeypatch.setattr(gen.nebius, "_chat", lambda *a, **k: json.dumps(batch))
+    monkeypatch.setattr(gen.config, "ai_configured", lambda: True)
+    result = gen.generate_questions("Course: Pre-Calculus\nTopic: Linear Functions", "Linear Functions", 5)
+    assert len(result["verified"]) == 5
+    assert result["shortfall"] == 0
+    assert result["discarded"] == 0
+

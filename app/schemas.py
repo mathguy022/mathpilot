@@ -338,9 +338,12 @@ def verify_question_canonical(question: Question) -> tuple[bool, list[str]]:
 
     Step expectations only need to PARSE (they are partial work, not the
     full solution). The final answer is compared against the canonical
-    solution via verifier.verify_canonical. Returns (ok, reasons).
+    solution via verifier.verify_canonical. If the problem cannot be
+    canonically solved from prompt alone (unverifiable), deterministic step
+    consistency (final answer matches the last step) is verified instead.
+    Returns (ok, reasons).
     """
-    from .verifier import verify_canonical
+    from .verifier import verify_canonical, check_equivalent
 
     reasons: list[str] = []
     if not question.steps:
@@ -358,7 +361,24 @@ def verify_question_canonical(question: Question) -> tuple[bool, list[str]]:
     if reasons:
         return False, reasons
     verdict = verify_canonical(question)
-    if verdict.status != "correct":
+    if verdict.status == "correct":
+        return True, reasons
+    if verdict.status == "incorrect":
         reasons.append(f"canonical check: {verdict.detail}")
         return False, reasons
-    return True, reasons
+    # If the problem cannot be solved canonically from prompt alone ("unverifiable",
+    # e.g. slope from points, line equations, function evaluations, word problems),
+    # verify that the final answer is deterministically equivalent to the last step.
+    if question.final_answer_latex and question.steps:
+        eq_verdict = check_equivalent(
+            question.final_answer_latex,
+            question.steps[-1].expected_input_latex,
+        )
+        if eq_verdict.status == "correct":
+            return True, reasons
+        reasons.append(
+            f"final answer not equivalent to last step: {eq_verdict.detail}"
+        )
+        return False, reasons
+    reasons.append(f"canonical check: {verdict.detail}")
+    return False, reasons

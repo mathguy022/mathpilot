@@ -181,3 +181,102 @@ def test_display_math_keeps_zero():
     assert display_math(sp.Integer(0)) == "0"
     assert canonical_answer(
         r"\lim_{x \to 0} \frac{\sqrt{x+4} - 2}{x}") == ["1/4"]
+
+
+def test_linear_function_slope_from_points():
+    steps = [
+        QuestionStep(description="Use slope formula.",
+                     expected_input_latex=r"m = \frac{11 - 3}{6 - 2}",
+                     objective_tags=["slope"]),
+        QuestionStep(description="Simplify.",
+                     expected_input_latex="m = 2",
+                     objective_tags=["slope"]),
+    ]
+    q = Question(
+        prompt_latex="Find the slope of the line passing through $(2, 3)$ and $(6, 11)$.",
+        steps=steps,
+        final_answer_latex="m = 2",
+    )
+    ok, reasons = verify_question_canonical(q)
+    assert ok, reasons
+
+
+def test_linear_function_line_equation():
+    steps = [
+        QuestionStep(description="Write slope-intercept form.",
+                     expected_input_latex="y = 3x - 5",
+                     objective_tags=["linear function"]),
+    ]
+    q = Question(
+        prompt_latex="Write the equation of the line with slope $m = 3$ and y-intercept $(0, -5)$.",
+        steps=steps,
+        final_answer_latex="y = 3x - 5",
+    )
+    ok, reasons = verify_question_canonical(q)
+    assert ok, reasons
+
+
+def test_linear_function_evaluation():
+    steps = [
+        QuestionStep(description="Substitute 3 into f(x).",
+                     expected_input_latex="4(3) - 7",
+                     objective_tags=["function evaluation"]),
+        QuestionStep(description="Simplify.",
+                     expected_input_latex="5",
+                     objective_tags=["function evaluation"]),
+    ]
+    q = Question(
+        prompt_latex="Given $f(x) = 4x - 7$, evaluate $f(3)$.",
+        steps=steps,
+        final_answer_latex="5",
+    )
+    ok, reasons = verify_question_canonical(q)
+    assert ok, reasons
+
+
+def test_linear_function_answer_with_function_notation():
+    steps = [
+        QuestionStep(description="Express f(x).",
+                     expected_input_latex="f(x) = 2x - 5",
+                     objective_tags=["linear function"]),
+    ]
+    q = Question(
+        prompt_latex="Find a linear function $f(x)$ with slope 2 and $f(0) = -5$.",
+        steps=steps,
+        final_answer_latex="f(x) = 2x - 5",
+    )
+    ok, reasons = verify_question_canonical(q)
+    assert ok, reasons
+
+
+def test_linear_function_gate_rejects_inconsistent_final_answer():
+    steps = [
+        QuestionStep(description="Simplify.",
+                     expected_input_latex="m = 2",
+                     objective_tags=["slope"]),
+    ]
+    q = Question(
+        prompt_latex="Find the slope of the line passing through $(2, 3)$ and $(6, 11)$.",
+        steps=steps,
+        final_answer_latex="m = 4",  # contradicts step
+    )
+    ok, reasons = verify_question_canonical(q)
+    assert not ok
+    assert any("not equivalent" in r.lower() for r in reasons)
+
+
+def test_linear_function_gate_rejects_unparseable_step():
+    steps = [
+        QuestionStep(description="Junk step.",
+                     expected_input_latex="??? not math ???",
+                     objective_tags=["slope"]),
+    ]
+    q = Question(
+        prompt_latex="Find the slope of the line passing through $(2, 3)$ and $(6, 11)$.",
+        steps=steps,
+        final_answer_latex="m = 2",
+    )
+    ok, reasons = verify_question_canonical(q)
+    assert not ok
+    assert any("unparseable" in r for r in reasons)
+
